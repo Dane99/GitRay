@@ -37,6 +37,9 @@ before(() => {
   // The developer's global config may enable commit signing via an external agent, which
   // would fail in a throwaway repository and take the whole test down with it.
   execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root });
+
+  // Keep git from warning about line-ending conversion on every fixture write.
+  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root });
   execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'base'], { cwd: root });
 
   assert.ok(
