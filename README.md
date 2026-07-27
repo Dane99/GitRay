@@ -154,7 +154,7 @@ minutes if the remote is unreachable.
 | `gitray.decorations.showInlineAnnotations` | `true` | End-of-line notes. |
 | `gitray.proximityLines` | `3` | How close counts as a near miss. |
 | `gitray.includeDrafts` | `false` | Include draft pull requests. |
-| `gitray.includeOwnPullRequests` | `false` | Your own branch is already visible to you. |
+| `gitray.includeOwnPullRequests` | `true` | Turn off to see only other people's work. |
 | `gitray.maxPullRequests` | `30` | Most recently updated first. |
 | `gitray.fetchPullRequestRefs` | `true` | Turn off for file-level indicators only. |
 | `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Hide specific noise. |

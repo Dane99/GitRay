@@ -109,8 +109,12 @@ export class SyncEngine {
   /**
    * Drop what the user does not want to see, then drop pull requests left with nothing.
    *
-   * Own pull requests are excluded by default: the point is to surface work you cannot
-   * see in your own editor, and your own branch is already visible to you.
+   * Own pull requests are included by default. The original reasoning — your own branch is
+   * already visible to you — only holds while you are standing on it: the moment you switch
+   * away, your own open pull request is exactly as invisible as a colleague's, and on a
+   * solo repository excluding it left GitRay with nothing to say at all. Standing on the
+   * branch costs nothing either way, because the merge base with your own head is that head,
+   * so the diff against it is empty and no regions are produced.
    */
   private applyFilters(pullRequests: readonly PullRequest[], config: Config): PullRequest[] {
     const mutedNumbers = new Set(config.mutedPullRequests);

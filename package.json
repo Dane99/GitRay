@@ -64,7 +64,7 @@
       },
       {
         "view": "gitray.pulse",
-        "contents": "No collaborator pull requests are open in this repository, so there is nothing to indicate yet.\n\nGitRay hides your own pull requests by default — a repository where you are the only author looks empty until someone else opens one.\n[Include my own pull requests](command:workbench.action.openSettings?%5B%22gitray.includeOwnPullRequests%22%5D)\n[Refresh](command:gitray.refresh)",
+        "contents": "No open pull requests to track in this repository.\n\nGitRay indicates work from your repository's open pull requests, so there is nothing to show until one is open.\n[Refresh](command:gitray.refresh)\n[Open settings](command:workbench.action.openSettings?%5B%22gitray%22%5D)",
         "when": "gitray.view == 'empty'"
       },
       {
@@ -252,8 +252,8 @@
         },
         "gitray.includeOwnPullRequests": {
           "type": "boolean",
-          "default": false,
-          "description": "Include pull requests authored by you."
+          "default": true,
+          "description": "Include pull requests authored by you. Turn this off to see only what other people are changing."
         },
         "gitray.maxPullRequests": {
           "type": "number",
