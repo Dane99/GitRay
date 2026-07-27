@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -59,7 +59,18 @@
     "viewsWelcome": [
       {
         "view": "gitray.pulse",
-        "contents": "GitRay is starting up.\n[Refresh](command:gitray.refresh)"
+        "contents": "GitRay is starting up.",
+        "when": "!gitray.view || gitray.view == 'starting'"
+      },
+      {
+        "view": "gitray.pulse",
+        "contents": "No collaborator pull requests are open in this repository, so there is nothing to indicate yet.\n\nGitRay hides your own pull requests by default — a repository where you are the only author looks empty until someone else opens one.\n[Include my own pull requests](command:workbench.action.openSettings?%5B%22gitray.includeOwnPullRequests%22%5D)\n[Refresh](command:gitray.refresh)",
+        "when": "gitray.view == 'empty'"
+      },
+      {
+        "view": "gitray.pulse",
+        "contents": "This folder is not a git repository, so GitRay has nothing to watch.",
+        "when": "gitray.view == 'noRepo'"
       }
     ],
     "commands": [

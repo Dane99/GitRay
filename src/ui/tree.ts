@@ -15,6 +15,15 @@ import type { Repository } from '../providers/repository.js';
 import { hueColorId } from '../model/palette.js';
 import { relativeTime } from './hover.js';
 
+/**
+ * Which welcome content the view should show when it has no rows.
+ *
+ * `starting` only covers the window before the first sync lands. Everything after that is
+ * either `content` or a genuine `empty`, so the startup message can never be the last
+ * thing a working install shows.
+ */
+type ViewState = 'starting' | 'empty' | 'content';
+
 type Node =
   | { kind: 'status' }
   | { kind: 'collisionsHeader' }
@@ -28,6 +37,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
   private disposables: vscode.Disposable[] = [];
+  private viewState: ViewState | undefined;
 
   constructor(
     private readonly repository: Repository,
@@ -39,10 +49,37 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
       this.store.onDidChange(() => this.refresh()),
       this.scanner.onDidChange(() => this.refresh())
     );
+    this.publishViewState();
   }
 
   refresh(): void {
+    this.publishViewState();
     this.onDidChangeTreeDataEmitter.fire(undefined);
+  }
+
+  /**
+   * Keep `gitray.view` in step with what the tree actually renders.
+   *
+   * A tree with no rows falls through to the view's welcome content, and that content is
+   * static markdown only the editor can swap — the extension cannot rewrite it. Without
+   * this key the startup message is the only thing the view can ever say, so a repository
+   * with nothing to track looks permanently stuck mid-launch.
+   *
+   * Deriving the state from `roots()` rather than from status alone is deliberate: it is
+   * the same call that produces the rows, so the welcome content and the tree cannot
+   * disagree about whether the view is empty.
+   */
+  private publishViewState(): void {
+    const state: ViewState =
+      this.roots().length > 0
+        ? 'content'
+        : this.store.currentStatus().lastSync === undefined
+          ? 'starting'
+          : 'empty';
+
+    if (state === this.viewState) return;
+    this.viewState = state;
+    void vscode.commands.executeCommand('setContext', 'gitray.view', state);
   }
 
   getTreeItem(node: Node): vscode.TreeItem {

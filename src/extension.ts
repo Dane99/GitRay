@@ -56,6 +56,9 @@ async function build(context: vscode.ExtensionContext): Promise<vscode.Disposabl
   const repository = await findRepository();
   if (!repository) {
     log.info('no git repository in this workspace; GitRay is idle');
+    // Nothing else runs in this case, so the view's welcome content is the only place
+    // left to say why. PulseTreeProvider owns this key whenever there is a repository.
+    void vscode.commands.executeCommand('setContext', 'gitray.view', 'noRepo');
     return undefined;
   }
 

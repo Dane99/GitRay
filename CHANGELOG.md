@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1
+
+- Fixed the sidebar sitting on "GitRay is starting up." forever. The view had one static
+  welcome message and no empty state, so any repository with nothing to track — including
+  every repository where you are the only pull request author, since your own are hidden
+  by default — looked like an extension that never finished launching. The view now
+  reports what it actually found: still starting, nothing to track, or not a git
+  repository.
+
 ## 0.1.0
 
 First release.
