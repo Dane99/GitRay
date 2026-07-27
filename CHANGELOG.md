@@ -1,12 +1,15 @@
 # Changelog
 
-## 0.1.1
+## 0.1.2
 
 - `gitray.includeOwnPullRequests` now defaults to `true`. Excluding your own work only
   made sense while you were standing on that branch; the moment you switched away, your
   own open pull request was as invisible as anyone else's, and on a repository where you
   are the only author GitRay had nothing to show at all. Set it to `false` for the old
   behaviour.
+
+## 0.1.1
+
 - Fixed the sidebar sitting on "GitRay is starting up." forever. The view had one static
   welcome message and no empty state, so any repository with nothing to track — including
   every repository where you are the only pull request author, since your own are hidden
