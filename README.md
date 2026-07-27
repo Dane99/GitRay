@@ -9,8 +9,9 @@ does not vanish from view at the moment its overlap with your work becomes real.
 is to move conflict discovery from merge time to write time, so a team can keep more
 branches in flight without paying for it later.
 
-Nothing is sent anywhere. GitRay uses your own `gh` CLI for pull request metadata and your
-local `git` for everything else.
+Nothing is sent anywhere. GitRay reads pull request metadata with credentials already on
+your machine — your `gh` CLI, or the GitHub sign-in VS Code already holds — and your local
+`git` for everything else.
 
 ---
 
@@ -79,8 +80,8 @@ Two things are deliberately different:
   mainline has moved since you branched would light up half the repository with changes
   that have nothing to do with you. Mainline marks appear only where the drift meets your
   own edits — as a near miss or a collision, never as texture.
-- **It keeps working when the rest of GitRay cannot.** Drift is plain git, so it survives a
-  missing `gh`, an expired login, and a flight with no wifi.
+- **It keeps working when the rest of GitRay cannot.** Drift is plain git, so it survives
+  missing credentials, an expired login, and a flight with no wifi.
 - **Muting does not apply.** [Muting](#muting) hides open pull requests. Once something has
   merged it is in your future regardless of who wrote it, so drift ignores both lists.
 
@@ -93,7 +94,9 @@ Adjacency counts as a collision, not a near miss. Two edits that meet at a seam 
 line between them make git stop and ask — [verified against real merges in the test
 suite](test/integration/gitPipeline.test.ts).
 
-Everything after step 1 is local. There is no server, no telemetry, and no token handling.
+Everything after step 1 is local. There is no server and no telemetry. GitRay stores no
+credentials of its own: step 1 runs through `gh`, or through a token the editor hands over
+for the length of one request and GitRay never writes down.
 
 ## Reading the indicators
 
@@ -189,13 +192,24 @@ regardless of who wrote it, so mainline drift ignores both lists.
 
 ## Requirements
 
-- [GitHub CLI](https://cli.github.com/) (`gh`), authenticated — `gh auth login`
 - `git`, with a full (non-shallow) clone
 - VS Code 1.90+
+- A way to read GitHub metadata, either of:
+  - VS Code's own GitHub sign-in — nothing to install; the sidebar offers it when needed
+  - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated — `gh auth login`
 
-GitRay degrades rather than disappearing. Without `gh`, a GitHub remote, or full history it
-falls back to file-level indicators and states the reason in the sidebar instead of
-throwing a notification at you every minute.
+`gh` is used whenever it is installed and logged in: it costs GitRay no permission of its
+own, and it already understands GitHub Enterprise hosts and fork base repositories. Without
+it, GitRay borrows the editor's GitHub session for the same single metadata request. The
+token is held for the duration of that request and never stored, and GitRay only ever reads.
+
+Two things still need `gh`: GitHub Enterprise hosts, because VS Code's built-in provider
+signs in to github.com only, and *Check Out Pull Request Branch*, because checking out a
+fork head needs a ref that does not exist on `origin`.
+
+GitRay degrades rather than disappearing. Without credentials, a GitHub remote, or full
+history it falls back to file-level indicators and states the reason in the sidebar instead
+of throwing a notification at you every minute.
 
 ## What it does to your repository
 
@@ -236,8 +250,10 @@ indicators only.
 
 ### API cost
 
-One `gh pr list` call per refresh, regardless of how many pull requests are open — the
-per-file data arrives in the same payload. Measured at **1 GraphQL point** against a
+One metadata call per refresh, regardless of how many pull requests are open — the
+per-file data arrives in the same payload, and both transports ask GitHub's GraphQL API for
+the same fields, because that is what `gh pr list --json` does too. Measured at **1 GraphQL
+point** against a
 5000/hour budget, so a full day at the default 60-second interval costs roughly 480 points.
 That is GitHub's GraphQL bucket, which is separate from the REST bucket your other tools
 use, so GitRay does not compete with them.
@@ -258,7 +274,7 @@ minutes if the remote is unreachable.
 | `gitray.proximityLines` | `3` | How many lines from your own edit still counts as a near miss. |
 | `gitray.includeDrafts` | `false` | Include draft pull requests. |
 | `gitray.includeOwnPullRequests` | `true` | Include pull requests you authored. Turn off to see only other people's work. |
-| `gitray.maxPullRequests` | `30` | How many open pull requests to track, most recently updated first. |
+| `gitray.maxPullRequests` | `30` | How many open pull requests to track, most recently updated first. Capped at 100 — one request's worth, which is what keeps a refresh costing one request. |
 | `gitray.fetchPullRequestRefs` | `true` | Fetch pull request heads into `refs/gitray/*` so indicators can be line-level. Never merges, rebases, or checks anything out. |
 | `gitray.mainline.trackDrift` | `true` | Flag work that already merged into the mainline and touches your lines. See [When the pull request has already merged](#when-the-pull-request-has-already-merged). |
 | `gitray.mainline.branch` | `""` | Branch to treat as the mainline. Empty means the remote's default branch, falling back to whatever your open pull requests target. |
@@ -305,7 +321,7 @@ drift apart as the base branch moves — editing at the raw hunk line number usu
 somewhere unrelated.
 
 **Offline mode.** `GitRay: Developer: Load Offline Fixture` loads a JSON pull request set
-in place of `gh`, so every surface can be exercised — and the design iterated on — with no
+in place of any GitHub call, so every surface can be exercised — and the design iterated on — with no
 network and no open pull requests. A sample lives in [`fixtures/sample.json`](fixtures/sample.json).
 
 ### Test layout

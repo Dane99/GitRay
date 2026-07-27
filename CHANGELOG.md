@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.8
+
+- **The GitHub CLI is no longer required.** It was the largest thing standing between
+  installing GitRay and seeing anything: a user without `gh` got a sidebar row telling them
+  to go and install a CLI, for the sake of one metadata request per minute. VS Code already
+  ships a GitHub authentication provider, and GitRay now falls back to it.
+  - `gh` is still preferred whenever it is installed and logged in. It costs GitRay no
+    permission of its own and it already understands Enterprise hosts, host config, and
+    fork base repositories — none of which a parsed `origin` URL knows about.
+  - The fallback asks GitHub's GraphQL API for exactly the fields `gh pr list --json` asks
+    for, so both transports produce the same pull requests, sorted and trimmed identically.
+    It is still one request per refresh, still 1 GraphQL point, still metadata only.
+  - `gitray.maxPullRequests` now stops at 100 rather than 200, and is clamped to it rather
+    than merely validated. One request returns one page of a hundred, and GitRay does not
+    paginate; the old ceiling was a setting that could only be honoured on machines with
+    `gh`, which is the same repository showing two different numbers on two machines.
+  - No token is stored. It is borrowed from the editor's session for the length of one
+    request. Nothing on a timer can open a sign-in dialog: the silent lookup is the only
+    one polling ever makes, and the interactive one lives behind an explicit command.
+  - Being signed out is now an actionable sidebar row rather than an instruction —
+    clicking it runs `GitRay: Sign in to GitHub`, and the next refresh follows immediately.
+  - Two things still need `gh`, and both say so plainly instead of failing: GitHub
+    Enterprise hosts, because the editor's provider signs in to github.com only, and
+    *Check Out Pull Request Branch*, because checking out a fork head needs a ref that does
+    not exist on `origin` and a push configuration a local branch would get wrong. The
+    checkout gate asks whether gh can actually act, not merely whether it is installed —
+    "installed but logged out, with the editor's session carrying the extension" is a state
+    the fallback made reachable, and it used to fail with gh's raw stderr in a popup.
+  - A session that expires mid-session now re-probes on the next pass rather than surfacing
+    as an error, so the CLI can take over from a dead session, or the reverse, with no reload.
+
 ## 0.1.7
 
 - **Muting is a whole feature now.** It had grown lopsided in both directions:

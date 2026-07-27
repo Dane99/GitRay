@@ -84,6 +84,21 @@ export class Git {
   }
 
   /**
+   * The configured URL for a remote, exactly as git has it.
+   *
+   * `get-url` rather than reading `remote.<name>.url` directly, so that `insteadOf`
+   * rewrites are applied — a corporate config that maps every github.com URL onto an
+   * internal mirror should be visible to whoever is deciding which host this is.
+   */
+  async remoteUrl(name = 'origin'): Promise<string | undefined> {
+    try {
+      return (await this.git(['remote', 'get-url', name])).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * The commit a ref currently points at, or undefined when the ref does not exist.
    *
    * Callers use this rather than an object-existence check to decide whether a fetch is

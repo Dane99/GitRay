@@ -205,6 +205,20 @@ export interface MainlineState {
 export const MAX_LOGGED_COMMITS = 20;
 
 /**
+ * How many open pull requests a single refresh can see.
+ *
+ * GitHub's GraphQL connections page at 100 and GitRay does not paginate: the promise that a
+ * refresh costs one request is worth more than the hundred-and-first pull request, which no
+ * editor surface could say anything useful about anyway.
+ *
+ * It lives here because it binds three things that must agree — how deep the CLI transport
+ * over-fetches, what the API transport asks for, and the ceiling `gitray.maxPullRequests`
+ * is clamped to. Letting them drift is how the same repository comes to show a different
+ * number of pull requests on two machines.
+ */
+export const MAX_TRACKED_PULL_REQUESTS = 100;
+
+/**
  * How far behind the mainline is, in the form every surface needs.
  *
  * `count` hitting the cap means the real number is *at least* that, so `display` says
@@ -228,8 +242,10 @@ export function behindMainline(state: MainlineState | undefined): BehindMainline
 
 /** Why line-level indicators are unavailable, when they are. */
 export type DegradedReason =
-  | 'gh-missing'
-  | 'gh-unauthenticated'
+  /** No GitHub credentials, and the editor's own sign-in would supply them. */
+  | 'signed-out'
+  /** No GitHub credentials, and only the `gh` CLI can supply them — an Enterprise host. */
+  | 'gh-required'
   | 'not-a-repo'
   | 'no-remote'
   | 'fetch-failed'

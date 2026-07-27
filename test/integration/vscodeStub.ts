@@ -45,6 +45,10 @@ export interface VscodeStub {
    */
   settings: Record<string, unknown>;
   registeredCommands: Map<string, (...args: unknown[]) => unknown>;
+  /** What `vscode.authentication.getSession` hands back. Undefined means "never signed in". */
+  githubSession: { accessToken: string; account: { label: string } } | undefined;
+  /** Every session request, so a test can assert that polling never asks interactively. */
+  sessionRequests: { providerId: string; scopes: string[]; interactive: boolean }[];
   treeViews: string[];
   statusBarItems: StatusBarRecord[];
   contentProviderSchemes: string[];
@@ -68,6 +72,8 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
     context: {},
     settings: {},
     registeredCommands: new Map(),
+    githubSession: undefined,
+    sessionRequests: [],
     treeViews: [],
     statusBarItems: [],
     contentProviderSchemes: [],
@@ -392,6 +398,26 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
 
     env: {
       openExternal: async () => true
+    },
+
+    // No session by default, which is what a machine that has never signed in looks like.
+    // Tests that want the API transport seed `stub.githubSession`.
+    authentication: {
+      getSession: async (
+        providerId: string,
+        scopes: string[],
+        options?: { createIfNone?: boolean; silent?: boolean }
+      ) => {
+        const interactive = options?.createIfNone === true;
+        state.sessionRequests.push({ providerId, scopes, interactive });
+        if (state.githubSession) return state.githubSession;
+        // Faithful to the real provider: a silent request with no session returns nothing,
+        // while an interactive one the user dismisses *rejects*. Returning undefined for
+        // both would leave the cancellation path looking tested when it never ran.
+        if (interactive) throw new Error('User did not consent to login.');
+        return undefined;
+      },
+      onDidChangeSessions: () => new Disposable()
     },
 
     languages: {

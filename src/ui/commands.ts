@@ -11,6 +11,7 @@ import { log } from '../core/log.js';
 import { isMutedAuthor, readConfig, updateSetting } from '../core/config.js';
 import type { Store } from '../model/store.js';
 import type { Repository } from '../providers/repository.js';
+import { signIn } from '../providers/session.js';
 import type { Scheduler } from '../sync/scheduler.js';
 import type { SyncEngine } from '../sync/engine.js';
 import type { CollisionScanner } from '../sync/scanner.js';
@@ -128,11 +129,28 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       // Muted pull requests are openable too — that is how you decide whether to unmute
       // one — and their record still carries the url, so this need not shell out to gh.
       const pr = store.pullRequest(prNumber) ?? store.mutedPullRequest(prNumber);
-      if (pr?.url) {
-        await vscode.env.openExternal(vscode.Uri.parse(pr.url));
+      const url = pr?.url || repository.github.pullRequestUrl(prNumber);
+      if (url) {
+        await vscode.env.openExternal(vscode.Uri.parse(url));
         return;
       }
-      await repository.gh.openInBrowser(prNumber);
+      // Nothing local knows where this one lives; gh can look it up.
+      await repository.github.openInBrowser(prNumber);
+    }),
+
+    /**
+     * Sign in with the editor's own GitHub account.
+     *
+     * The one place GitRay is allowed to open an authentication dialog, and it takes an
+     * explicit click on the sidebar's signed-out row to get here. Polling never asks.
+     */
+    vscode.commands.registerCommand('gitray.signIn', async () => {
+      if (!(await signIn())) return;
+      // The engine re-probes on every pass while it is degraded, so this only brings the
+      // answer forward — but waiting a minute after signing in reads like nothing happened.
+      await scheduler.request('manual');
+      await scanner.scan(readConfig(repository.folder.uri));
+      controller.refreshVisible();
     }),
 
     vscode.commands.registerCommand('gitray.diffWithPullRequest', async (raw?: unknown) => {
@@ -195,6 +213,21 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       const pr = store.pullRequest(prNumber);
       if (!pr) return;
 
+      // The one thing the editor's GitHub session cannot stand in for. Checking out a fork
+      // head needs a ref that does not exist on `origin`, and it needs the branch wired up
+      // so a later push reaches the contributor — gh does both, and a local branch cut from
+      // GitRay's read-only ref would look identical while pushing to the wrong place.
+      if (!(await repository.github.canCheckout())) {
+        const choice = await vscode.window.showInformationMessage(
+          'GitRay: checking out a pull request branch needs the GitHub CLI (gh), installed and signed in. Everything else works without it.',
+          'Open on GitHub'
+        );
+        if (choice === 'Open on GitHub') {
+          await vscode.commands.executeCommand('gitray.openPullRequest', { prNumber });
+        }
+        return;
+      }
+
       if (!(await repository.git.isClean())) {
         const choice = await vscode.window.showWarningMessage(
           `You have uncommitted changes. Check out \`${pr.headRefName}\` anyway?`,
@@ -205,8 +238,7 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       }
 
       try {
-        // Via gh rather than raw git: fork heads have no branch on `origin` to fetch.
-        await repository.gh.checkout(pr.number);
+        await repository.github.checkout(pr.number);
         void vscode.window.showInformationMessage(`GitRay: checked out \`${pr.headRefName}\`.`);
       } catch (error) {
         void vscode.window.showErrorMessage(

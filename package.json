@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -161,6 +161,12 @@
         "category": "GitRay"
       },
       {
+        "command": "gitray.signIn",
+        "title": "Sign in to GitHub",
+        "category": "GitRay",
+        "icon": "$(sign-in)"
+      },
+      {
         "command": "gitray.showOutput",
         "title": "Show Log",
         "category": "GitRay",
@@ -313,8 +319,8 @@
           "type": "number",
           "default": 30,
           "minimum": 1,
-          "maximum": 200,
-          "description": "Maximum number of open pull requests to track, most recently updated first."
+          "maximum": 100,
+          "description": "Maximum number of open pull requests to track, most recently updated first. Capped at 100, which is what a single request to GitHub returns."
         },
         "gitray.proximityLines": {
           "type": "number",

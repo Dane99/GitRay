@@ -3,6 +3,7 @@
  */
 
 import * as vscode from 'vscode';
+import { MAX_TRACKED_PULL_REQUESTS } from './types.js';
 
 export type DecorationMode = 'ambient' | 'collisionsOnly' | 'off';
 
@@ -31,7 +32,13 @@ export function readConfig(scope?: vscode.Uri): Config {
     refreshInterval: raw.get<number>('refreshInterval', 60),
     includeDrafts: raw.get<boolean>('includeDrafts', false),
     includeOwnPullRequests: raw.get<boolean>('includeOwnPullRequests', true),
-    maxPullRequests: raw.get<number>('maxPullRequests', 30),
+    // Clamped, not merely validated: the manifest's `maximum` is advice a settings.json
+    // written by hand can ignore, and a value above the page limit is one both transports
+    // would answer differently — the CLI paginates internally, the API does not.
+    maxPullRequests: Math.min(
+      raw.get<number>('maxPullRequests', 30),
+      MAX_TRACKED_PULL_REQUESTS
+    ),
     proximityLines: raw.get<number>('proximityLines', 3),
     decorationMode: raw.get<DecorationMode>('decorations.mode', 'ambient'),
     showInlineAnnotations: raw.get<boolean>('decorations.showInlineAnnotations', true),

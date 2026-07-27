@@ -8,11 +8,12 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Git } from './git.js';
-import { Gh } from './gh.js';
+import { GitHub } from './github.js';
+import { editorTokenSource } from './session.js';
 
 export class Repository {
   readonly git: Git;
-  readonly gh: Gh;
+  readonly github: GitHub;
 
   private constructor(
     readonly root: string,
@@ -21,7 +22,9 @@ export class Repository {
     readonly folder: vscode.WorkspaceFolder
   ) {
     this.git = new Git(root);
-    this.gh = new Gh(root);
+    // The editor is injected here and nowhere deeper: everything below this line can be
+    // exercised without one.
+    this.github = new GitHub(root, this.git, editorTokenSource());
   }
 
   /** Resolve the git repository containing a workspace folder, if there is one. */
