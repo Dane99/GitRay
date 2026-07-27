@@ -263,6 +263,25 @@ test('everything the extension needs at runtime is still packaged', () => {
   }
 });
 
+test('source files contain no raw control bytes', () => {
+  // A literal NUL (or similar) byte in a source file makes git and ripgrep classify the
+  // whole file as binary: diffs collapse to "Binary files differ" and code search
+  // silently skips it. This happened to store.ts and analyzer.ts, which used literal NUL
+  // bytes as cache-key separators — the fix was the two-character escape `\0`, which is
+  // the same string at runtime. Tab, LF, and CR are the only control bytes with any
+  // business being in source.
+  for (const file of sources) {
+    const bad = [...file.text].findIndex(
+      (ch) => ch.charCodeAt(0) < 0x20 && !['\t', '\n', '\r'].includes(ch)
+    );
+    assert.equal(
+      bad,
+      -1,
+      `${file.path} contains a raw control byte (0x${file.text.charCodeAt(bad).toString(16)}) at offset ${bad}`
+    );
+  }
+});
+
 test('the entry point named by main is what esbuild produces', () => {
   assert.equal(manifest.main, './dist/extension.js');
   const esbuild = readFileSync(join(root, 'esbuild.mjs'), 'utf8');

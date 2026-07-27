@@ -33,24 +33,17 @@ export class SyncEngine {
     this.probed = false;
   }
 
-  get isUsingFixture(): boolean {
-    return this.fixture !== undefined;
-  }
-
-  get currentLogin(): string | undefined {
-    return this.login;
-  }
-
   /**
    * Run a sync pass.
    *
    * Never throws: a failing sync degrades the UI with a stated reason instead of
    * surfacing an exception, because this runs on a timer and a modal every 60 seconds
-   * would be intolerable.
+   * would be intolerable. The return value is how the scheduler learns about transient
+   * failures anyway — false means "the network let us down, back off", while persistent
+   * conditions like a missing gh return true so they keep being probed at the normal
+   * cadence.
    */
-  async sync(config: Config): Promise<void> {
-    this.store.setStatus({ state: 'syncing' });
-
+  async sync(config: Config): Promise<boolean> {
     try {
       await this.detectHeadMove();
 
@@ -58,16 +51,16 @@ export class SyncEngine {
         ? this.applyFilters(this.fixture, config)
         : await this.fetchPullRequests(config);
 
-      if (pullRequests === undefined) return;
+      if (pullRequests !== undefined) {
+        const closed = this.store.setPullRequests(pullRequests);
 
-      const closed = this.store.setPullRequests(pullRequests);
+        if (this.fixture) {
+          this.store.setStatus({ state: 'ready', message: 'Offline fixture' });
+          return true;
+        }
 
-      if (this.fixture) {
-        this.store.setStatus({ state: 'ready', message: 'Offline fixture' });
-        return;
+        await this.reconcileRefs(pullRequests, closed, config);
       }
-
-      await this.reconcileRefs(pullRequests, closed, config);
     } catch (error) {
       log.error('sync failed', error);
       this.store.setStatus({
@@ -75,6 +68,13 @@ export class SyncEngine {
         message: error instanceof Error ? error.message : String(error)
       });
     }
+
+    const status = this.store.currentStatus();
+    return (
+      status.state !== 'error' &&
+      status.reason !== 'offline' &&
+      status.reason !== 'fetch-failed'
+    );
   }
 
   /** Returns undefined when the store has already been put into a degraded state. */
@@ -88,8 +88,11 @@ export class SyncEngine {
         case 'unauthenticated':
           this.store.setDegraded('gh-unauthenticated', 'Run `gh auth login` to connect to GitHub.');
           return undefined;
+        case 'offline':
+          this.store.setDegraded('offline', `GitHub is unreachable — ${state.message}`);
+          return undefined;
         case 'no-repo':
-          this.store.setDegraded('no-remote', state.message);
+          this.store.setDegraded('not-a-repo', state.message);
           return undefined;
         case 'ok':
           this.login = state.login;

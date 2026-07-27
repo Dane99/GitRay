@@ -83,7 +83,3 @@ export function maxSeverity(severities: readonly Severity[]): Severity {
   }
   return best;
 }
-
-export function isAtLeast(severity: Severity, floor: Severity): boolean {
-  return RANK[severity] >= RANK[floor];
-}

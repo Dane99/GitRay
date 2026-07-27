@@ -26,9 +26,6 @@ export class EditorController implements vscode.Disposable {
   private readonly generation = new Map<string, number>();
   private disposables: vscode.Disposable[] = [];
 
-  private readonly onDidChangeAnalysisEmitter = new vscode.EventEmitter<void>();
-  readonly onDidChangeAnalysis = this.onDidChangeAnalysisEmitter.event;
-
   constructor(
     private readonly repository: Repository,
     private readonly store: Store,
@@ -38,7 +35,6 @@ export class EditorController implements vscode.Disposable {
 
     this.disposables.push(
       this.painter,
-      this.onDidChangeAnalysisEmitter,
 
       vscode.window.onDidChangeVisibleTextEditors(() => this.refreshVisible()),
 
@@ -56,6 +52,10 @@ export class EditorController implements vscode.Disposable {
           clearTimeout(timer);
           this.pending.delete(key);
         }
+        // The painter tracks arrival state per file; without this it accumulates an
+        // entry for every document ever opened in the session.
+        const path = this.repository.relativePath(document.uri);
+        if (path) this.painter.forget(path);
       }),
 
       // Selection moves change which region gets an inline annotation, so repaint from
@@ -136,7 +136,6 @@ export class EditorController implements vscode.Disposable {
 
     this.analyses.set(key, analysis);
     for (const editor of editors) this.paint(editor, analysis);
-    this.onDidChangeAnalysisEmitter.fire();
   }
 
   private paint(editor: vscode.TextEditor, analysis: FileAnalysis): void {
@@ -149,15 +148,6 @@ export class EditorController implements vscode.Disposable {
 
   analysisFor(uri: vscode.Uri): FileAnalysis | undefined {
     return this.analyses.get(uri.toString());
-  }
-
-  /** Collision count across every analyzed document, for the status bar. */
-  visibleCollisionCount(): number {
-    let count = 0;
-    for (const analysis of this.analyses.values()) {
-      count += analysis.regions.filter((region) => region.severity === 'collision').length;
-    }
-    return count;
   }
 
   dispose(): void {

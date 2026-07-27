@@ -89,7 +89,6 @@ const pullRequests = new Map<number, PullRequest>([
       number: 7395,
       title: 'fix(req.get): perform case-insensitive header lookup',
       author: 'armanmikoyan',
-      authorIsBot: false,
       headRefName: 'fix/req-get',
       headRefOid: 'deadbeef',
       baseRefName: 'master',

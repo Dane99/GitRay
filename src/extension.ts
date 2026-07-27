@@ -21,6 +21,7 @@ import { GitRayFileDecorationProvider } from './ui/fileDecorations.js';
 import { StatusBar } from './ui/statusBar.js';
 import { PullRequestContentProvider } from './ui/contentProvider.js';
 import { registerCommands } from './ui/commands.js';
+import { openWorkspaceFile } from './ui/open.js';
 import { RadarPanel } from './radar/panel.js';
 
 let active: vscode.Disposable | undefined;
@@ -90,20 +91,10 @@ async function build(context: vscode.ExtensionContext): Promise<vscode.Disposabl
     engine
   });
 
-  const openFile = async (path: string, line?: number) => {
-    const document = await vscode.workspace.openTextDocument(repository.uriFor(path));
-    const editor = await vscode.window.showTextDocument(document, { preview: false });
-    if (line !== undefined) {
-      const target = new vscode.Range(line, 0, line, 0);
-      editor.selection = new vscode.Selection(target.start, target.start);
-      editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    }
-  };
-
   const serializer = vscode.window.registerWebviewPanelSerializer(RadarPanel.viewType, {
     async deserializeWebviewPanel(panel) {
       RadarPanel.restore(panel, context.extensionUri, store, scanner, (path, line) =>
-        void openFile(path, line)
+        void openWorkspaceFile(repository, path, line)
       );
     }
   });

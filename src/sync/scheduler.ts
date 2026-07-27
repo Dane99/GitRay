@@ -80,8 +80,10 @@ export class Scheduler implements vscode.Disposable {
 
     try {
       const config = readConfig(this.repository.folder.uri);
-      await this.engine.sync(config);
-      this.consecutiveFailures = 0;
+      // The engine reports transient failures through its return value rather than by
+      // throwing — see SyncEngine.sync. The catch below is only a safety net.
+      const healthy = await this.engine.sync(config);
+      this.consecutiveFailures = healthy ? 0 : this.consecutiveFailures + 1;
     } catch (error) {
       this.consecutiveFailures++;
       log.error('scheduled sync failed', error);

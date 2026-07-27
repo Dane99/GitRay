@@ -103,7 +103,7 @@ throwing a notification at you every minute.
 GitRay fetches open pull request heads so it can diff them locally:
 
 ```
-git fetch --no-tags --prune origin +refs/pull/142/head:refs/gitray/pr/142 ...
+git fetch --no-tags origin +refs/pull/142/head:refs/gitray/pr/142 ...
 ```
 
 To be explicit, because it is the reasonable worry:
@@ -169,7 +169,7 @@ still warn me" is one keystroke away.
 ```sh
 npm install
 npm run bundle     # or: npm run watch
-npm test           # 91 tests
+npm test
 npm run check      # typecheck + lint + test
 ```
 

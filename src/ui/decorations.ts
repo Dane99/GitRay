@@ -113,12 +113,7 @@ export class DecorationPainter implements vscode.Disposable {
 
       const options: vscode.DecorationOptions = {
         range,
-        hoverMessage: buildHover(
-          run.bucket.regions,
-          pullRequests,
-          editor.document.languageId,
-          analysis.path
-        )
+        hoverMessage: buildHover(run.bucket.regions, pullRequests, analysis.path)
       };
 
       const existing = groups.get(key);
@@ -181,6 +176,16 @@ export class DecorationPainter implements vscode.Disposable {
     );
 
     return arrived;
+  }
+
+  /** Drop per-file arrival tracking, e.g. when the document closed. */
+  forget(path: string): void {
+    this.seenRegions.delete(path);
+    const timer = this.flashTimers.get(path);
+    if (timer) {
+      clearTimeout(timer);
+      this.flashTimers.delete(path);
+    }
   }
 
   private typeFor(key: string): vscode.TextEditorDecorationType {

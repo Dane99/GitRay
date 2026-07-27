@@ -241,23 +241,18 @@ export class Git {
     }
   }
 
-  /** Check out a pull request branch, creating a local branch tracking the remote. */
-  async checkoutBranch(branch: string, remote = 'origin'): Promise<void> {
-    const exists = await this.branchExists(branch);
-    if (exists) {
-      await this.git(['checkout', branch]);
-      return;
-    }
-    await this.git(['fetch', '--no-tags', '--quiet', remote, `+${branch}:${branch}`]);
-    await this.git(['checkout', branch]);
-  }
-
-  private async branchExists(branch: string): Promise<boolean> {
+  /**
+   * Absolute path of the .git directory, or undefined outside a repository.
+   *
+   * Not always `<root>/.git`: in a linked worktree `.git` is a file pointing at the real
+   * directory, and anything that wants to watch HEAD has to watch where HEAD actually is.
+   */
+  async gitDir(): Promise<string | undefined> {
     try {
-      await this.git(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
-      return true;
+      const out = await this.git(['rev-parse', '--absolute-git-dir']);
+      return out.trim() || undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 

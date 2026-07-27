@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.4
+
+- The exponential backoff for unreachable remotes now actually engages. The sync engine
+  swallowed its own failures, so the scheduler's failure counter never moved and a dead
+  network was retried at full cadence forever, despite the README promising otherwise.
+- The collision scanner no longer reuses stale line alignments for files with unsaved
+  edits. It passed a constant document version into the analyzer's cache, so the sidebar,
+  status bar, and explorer badges could disagree with the editor gutter about the same
+  file until the next save.
+- Being offline is now reported as GitHub being unreachable instead of telling a
+  logged-in user to run `gh auth login`.
+- `Check Out Pull Request Branch` goes through `gh pr checkout`, so it works for pull
+  requests from forks, whose branches do not exist on `origin`.
+- Quiet polls no longer repaint every surface: a sync that returns the same pull requests
+  in the same state fires no change event and triggers no rescan.
+- HEAD watching now resolves the real `.git` directory, so it works in linked worktrees.
+- Walking collisions backwards from a file outside the hot list no longer skips the last
+  file.
+- Replaced literal NUL bytes in two source files with `\0` escapes. The bytes made git
+  and code-search tools treat `store.ts` and `analyzer.ts` as binary; a test now guards
+  against raw control bytes in source.
+- Removed dead code (`authorIsBot`, the unused `syncing` status, several unused exports)
+  and corrected README claims that had drifted from the implementation.
+
 ## 0.1.3
 
 - Documented `gitray.maxRegionsPerFile`, which the README settings table had omitted since

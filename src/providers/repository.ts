@@ -16,6 +16,8 @@ export class Repository {
 
   private constructor(
     readonly root: string,
+    /** The actual .git directory — not `<root>/.git` in a linked worktree. */
+    private readonly gitDir: string,
     readonly folder: vscode.WorkspaceFolder
   ) {
     this.git = new Git(root);
@@ -27,7 +29,8 @@ export class Repository {
     const probe = new Git(folder.uri.fsPath);
     const root = await probe.repositoryRoot();
     if (!root) return undefined;
-    return new Repository(path.normalize(root), folder);
+    const gitDir = (await probe.gitDir()) ?? path.join(root, '.git');
+    return new Repository(path.normalize(root), path.normalize(gitDir), folder);
   }
 
   /**
@@ -51,10 +54,16 @@ export class Repository {
     return vscode.Uri.file(path.join(this.root, ...relativePath.split('/')));
   }
 
-  /** Watches the refs that indicate HEAD moved under us — a checkout, commit, or rebase. */
+  /**
+   * Watches the files that indicate HEAD moved under us — a checkout, merge, or rebase.
+   *
+   * A plain commit rewrites neither of these (it moves `refs/heads/<branch>`, which HEAD
+   * points at symbolically), so commits are noticed by the sync engine's head check on
+   * the next pass rather than here.
+   */
   createHeadWatcher(): vscode.FileSystemWatcher {
     return vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(vscode.Uri.file(path.join(this.root, '.git')), '{HEAD,ORIG_HEAD}')
+      new vscode.RelativePattern(vscode.Uri.file(this.gitDir), '{HEAD,ORIG_HEAD}')
     );
   }
 }

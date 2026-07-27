@@ -34,7 +34,6 @@ export interface PullRequest {
   number: number;
   title: string;
   author: string;
-  authorIsBot: boolean;
   headRefName: string;
   headRefOid: string;
   baseRefName: string;
@@ -112,7 +111,7 @@ export type DegradedReason =
   | 'offline';
 
 export interface StatusInfo {
-  state: 'idle' | 'syncing' | 'ready' | 'degraded' | 'error';
+  state: 'idle' | 'ready' | 'degraded' | 'error';
   /** Present when state is 'degraded' or 'error'. */
   reason?: DegradedReason;
   message?: string;

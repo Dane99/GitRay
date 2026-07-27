@@ -73,7 +73,6 @@ export function parseFixture(json: string): PullRequest[] {
       number,
       title: entry.title ?? `Fixture pull request #${number}`,
       author,
-      authorIsBot: false,
       headRefName: entry.headRefName ?? `fixture/${number}`,
       headRefOid: entry.headRefOid ?? `fixture${String(number).padStart(36, '0')}`,
       baseRefName: entry.baseRefName ?? 'main',

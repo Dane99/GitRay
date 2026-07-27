@@ -17,7 +17,7 @@ const files = dirs.flatMap((dir) =>
 );
 
 if (files.length === 0) {
-  console.error(`No test files found in ${dir}`);
+  console.error(`No test files found in ${dirs.join(', ')}`);
   process.exit(1);
 }
 

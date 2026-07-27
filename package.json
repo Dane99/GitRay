@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -128,7 +128,7 @@
       },
       {
         "command": "gitray.unmuteAll",
-        "title": "Unmute All Pull Requests",
+        "title": "Unmute All Pull Requests and Authors",
         "category": "GitRay"
       },
       {

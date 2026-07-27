@@ -16,6 +16,7 @@ import type { SyncEngine } from '../sync/engine.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import type { EditorController } from './editorController.js';
 import { pullRequestFileUri } from './contentProvider.js';
+import { openWorkspaceFile } from './open.js';
 import { RadarPanel } from '../radar/panel.js';
 import { pickFixture } from '../dev/fixtures.js';
 import type { ResolvedRegion } from '../core/types.js';
@@ -39,15 +40,8 @@ export interface CommandContext {
 export function registerCommands(context: CommandContext): vscode.Disposable[] {
   const { repository, store, scanner, controller, scheduler, engine, extensionUri } = context;
 
-  const openFile = async (path: string, line?: number): Promise<void> => {
-    const document = await vscode.workspace.openTextDocument(repository.uriFor(path));
-    const editor = await vscode.window.showTextDocument(document, { preview: false });
-    if (line !== undefined) {
-      const target = new vscode.Range(line, 0, line, 0);
-      editor.selection = new vscode.Selection(target.start, target.start);
-      editor.revealRange(target, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    }
-  };
+  const openFile = (path: string, line?: number): Promise<void> =>
+    openWorkspaceFile(repository, path, line);
 
   /** Resolve which pull request and path a command is about. */
   const resolve = (args?: CommandArgs): { prNumber?: number; path?: string } => {
@@ -138,7 +132,8 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       }
 
       try {
-        await repository.git.checkoutBranch(pr.headRefName);
+        // Via gh rather than raw git: fork heads have no branch on `origin` to fetch.
+        await repository.gh.checkout(pr.number);
         void vscode.window.showInformationMessage(`GitRay: checked out \`${pr.headRefName}\`.`);
       } catch (error) {
         void vscode.window.showErrorMessage(
@@ -245,10 +240,17 @@ async function jumpToCollision(
     return;
   }
 
+  // From a file outside the list there is no "adjacent" file, so enter the cycle at the
+  // appropriate end; from inside it, step around it with wraparound.
   const currentIndex = files.findIndex((analysis) => analysis.path === currentPath);
   const step = direction === 'next' ? 1 : -1;
-  const nextIndex = (currentIndex + step + files.length) % files.length;
-  const nextFile = files[nextIndex === currentIndex && files.length === 1 ? 0 : nextIndex];
+  const nextIndex =
+    currentIndex === -1
+      ? direction === 'next'
+        ? 0
+        : files.length - 1
+      : (currentIndex + step + files.length) % files.length;
+  const nextFile = files[nextIndex];
 
   const collisions = nextFile.regions.filter((r) => r.severity === 'collision');
   const target = direction === 'next' ? collisions[0] : collisions[collisions.length - 1];
