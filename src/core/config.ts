@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 export type DecorationMode = 'ambient' | 'collisionsOnly' | 'off';
 
 export interface Config {
-  refreshInterval: number;
+  refreshInterval: number; // seconds
   includeDrafts: boolean;
   includeOwnPullRequests: boolean;
   maxPullRequests: number;
