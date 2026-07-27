@@ -141,6 +141,46 @@ test('every declared setting is actually read', () => {
   }
 });
 
+test('scalar setting defaults agree between package.json and config.ts', () => {
+  // Two copies of every default exist: the manifest's, which the editor hands back from
+  // `get`, and config.ts's fallback for when the key is absent. Nothing forces them to
+  // agree, and a drifted pair changes behaviour without failing anything — the manifest
+  // wins in a real host while the fallback wins in tests, so the disagreement is invisible
+  // in exactly the place it would be caught.
+  //
+  // Only scalars are checked. The array settings deliberately fall back to `[]` against a
+  // populated manifest default, because "nothing configured" and "the shipped ignore list"
+  // are different answers there.
+  const configSource = sources.find((file) => file.path.endsWith('config.ts'));
+  assert.ok(configSource, 'expected src/core/config.ts');
+
+  const properties = manifest.contributes.configuration.properties as Record<
+    string,
+    { default?: unknown }
+  >;
+
+  const fallbacks = [
+    ...configSource.text.matchAll(/\bget<[^>]+>\(\s*'([^']+)'\s*,\s*([^),]+)\)/g)
+  ];
+  assert.ok(fallbacks.length > 0, 'expected config.ts to declare fallbacks');
+
+  let compared = 0;
+  for (const [, key, rawFallback] of fallbacks) {
+    const declared = properties[`gitray.${key}`]?.default;
+    if (declared === null || typeof declared === 'object') continue;
+
+    const fallback = JSON.parse(rawFallback.trim().replace(/^'(.*)'$/, '"$1"')) as unknown;
+    assert.equal(
+      fallback,
+      declared,
+      `gitray.${key}: package.json defaults to ${JSON.stringify(declared)} but config.ts falls back to ${JSON.stringify(fallback)}`
+    );
+    compared++;
+  }
+
+  assert.ok(compared >= 8, `expected to compare most scalar settings, compared ${compared}`);
+});
+
 test('files referenced by the manifest and webview exist', () => {
   const referenced = [
     manifest.contributes.viewsContainers.activitybar[0].icon,

@@ -26,7 +26,7 @@ export function readConfig(scope?: vscode.Uri): Config {
   return {
     refreshInterval: raw.get<number>('refreshInterval', 60),
     includeDrafts: raw.get<boolean>('includeDrafts', false),
-    includeOwnPullRequests: raw.get<boolean>('includeOwnPullRequests', false),
+    includeOwnPullRequests: raw.get<boolean>('includeOwnPullRequests', true),
     maxPullRequests: raw.get<number>('maxPullRequests', 30),
     proximityLines: raw.get<number>('proximityLines', 3),
     decorationMode: raw.get<DecorationMode>('decorations.mode', 'ambient'),
