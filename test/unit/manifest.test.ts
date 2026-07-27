@@ -170,6 +170,37 @@ test('the tree view id matches what the extension registers', () => {
   );
 });
 
+test('development-only directories are kept out of the package', () => {
+  // A pattern that matches nothing fails silently: the files just ship. `scripts/` was
+  // shipping inside the VSIX because `**/*.ts` happened to cover one file in it and
+  // nothing covered the rest.
+  const ignore = readFileSync(join(root, '.vscodeignore'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'));
+
+  for (const directory of ['src', 'test', 'scripts', 'fixtures', 'node_modules', '.vscode']) {
+    assert.ok(
+      ignore.includes(`${directory}/**`),
+      `.vscodeignore should exclude ${directory}/**`
+    );
+  }
+});
+
+test('everything the extension needs at runtime is still packaged', () => {
+  const ignore = readFileSync(join(root, '.vscodeignore'), 'utf8');
+
+  // The inverse mistake — excluding something the extension loads at runtime — is worse,
+  // because it only shows up once the published extension tries to open the Radar.
+  for (const needed of ['media/', 'dist/', 'package.json', 'README']) {
+    assert.doesNotMatch(
+      ignore,
+      new RegExp(`^${needed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm'),
+      `${needed} must not be excluded from the package`
+    );
+  }
+});
+
 test('the entry point named by main is what esbuild produces', () => {
   assert.equal(manifest.main, './dist/extension.js');
   const esbuild = readFileSync(join(root, 'esbuild.mjs'), 'utf8');
