@@ -23,7 +23,6 @@ const MAX_PREVIEW_LINES = 14;
 export function buildHover(
   regions: readonly ResolvedRegion[],
   pullRequests: ReadonlyMap<number, PullRequest>,
-  languageId: string,
   relativePath: string
 ): vscode.MarkdownString {
   const md = new vscode.MarkdownString(undefined, true);
@@ -32,7 +31,7 @@ export function buildHover(
 
   regions.forEach((region, index) => {
     if (index > 0) md.appendMarkdown('\n\n---\n\n');
-    appendRegion(md, region, pullRequests.get(region.prNumber), languageId, relativePath);
+    appendRegion(md, region, pullRequests.get(region.prNumber), relativePath);
   });
 
   return md;
@@ -42,7 +41,6 @@ function appendRegion(
   md: vscode.MarkdownString,
   region: ResolvedRegion,
   pr: PullRequest | undefined,
-  languageId: string,
   relativePath: string
 ): void {
   const title = pr?.title ?? 'Pull request';
@@ -55,7 +53,7 @@ function appendRegion(
   md.appendMarkdown(`${meta.join(' &nbsp;·&nbsp; ')}\n\n`);
 
   md.appendMarkdown(`${verdict(region)}\n\n`);
-  appendPreview(md, region, languageId);
+  appendPreview(md, region);
 
   const args = (extra: object = {}) =>
     encodeURIComponent(JSON.stringify([{ prNumber: region.prNumber, path: relativePath, ...extra }]));
@@ -107,7 +105,7 @@ function describeKind(region: ResolvedRegion): string {
  * which is what makes a small change readable at a glance. Long hunks are trimmed from
  * the middle: the start and end carry the meaning, the bulk rarely does.
  */
-function appendPreview(md: vscode.MarkdownString, region: ResolvedRegion, languageId: string): void {
+function appendPreview(md: vscode.MarkdownString, region: ResolvedRegion): void {
   const lines = [
     ...region.removed.map((line) => `-${line}`),
     ...region.added.map((line) => `+${line}`)
@@ -124,7 +122,7 @@ function appendPreview(md: vscode.MarkdownString, region: ResolvedRegion, langua
           ...lines.slice(-3)
         ];
 
-  md.appendCodeblock(shown.join('\n'), lines.length > 0 ? 'diff' : languageId);
+  md.appendCodeblock(shown.join('\n'), 'diff');
   md.appendMarkdown('\n');
 }
 

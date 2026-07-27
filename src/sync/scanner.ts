@@ -12,14 +12,13 @@
  */
 
 import * as vscode from 'vscode';
-import type { FileAnalysis } from '../core/types.js';
+import type { FileAnalysis, PullRequest } from '../core/types.js';
 import type { Config } from '../core/config.js';
 import { log } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
 import type { Analyzer } from '../model/analyzer.js';
 import type { Store } from '../model/store.js';
 import type { Repository } from '../providers/repository.js';
-import { prRef } from '../providers/git.js';
 
 /** Ceiling on files analyzed per scan, so a branch that rewrites the world stays responsive. */
 const MAX_FILES = 200;
@@ -103,10 +102,10 @@ export class CollisionScanner implements vscode.Disposable {
 
     const results = new Map<string, FileAnalysis>();
     for (const path of [...candidates].slice(0, MAX_FILES)) {
-      const text = await this.readCurrentText(path);
-      if (text === undefined) continue;
+      const current = await this.readCurrentText(path);
+      if (current === undefined) continue;
 
-      const analysis = await this.analyzer.analyze(path, text, -1, pullRequests, {
+      const analysis = await this.analyzer.analyze(path, current.text, current.version, pullRequests, {
         proximityLines: config.proximityLines,
         maxRegionsPerFile: config.maxRegionsPerFile
       });
@@ -116,12 +115,11 @@ export class CollisionScanner implements vscode.Disposable {
     this.publish(results);
   }
 
-  private async distinctMergeBases(
-    pullRequests: readonly { number: number }[]
-  ): Promise<string[]> {
+  /** One merge base per pull request, answered from the analyzer's cache. */
+  private async distinctMergeBases(pullRequests: readonly PullRequest[]): Promise<string[]> {
     const bases = new Set<string>();
     for (const pr of pullRequests) {
-      const base = await this.repository.git.mergeBase(prRef(pr.number));
+      const base = await this.analyzer.mergeBaseFor(pr);
       if (base) bases.add(base);
     }
     return [...bases];
@@ -132,18 +130,29 @@ export class CollisionScanner implements vscode.Disposable {
    *
    * The editor copy is authoritative because unsaved edits are exactly the ones you have
    * not had a chance to discover a conflict in yet.
+   *
+   * The version is what keys the analyzer's alignment cache, so it must actually change
+   * when the content does: the document's own version for open files — the same value the
+   * editor controller uses, so the two share cache entries — and the mtime for files read
+   * from disk. A constant here would silently serve alignments computed from an earlier
+   * state of the buffer.
    */
-  private async readCurrentText(path: string): Promise<string | undefined> {
+  private async readCurrentText(
+    path: string
+  ): Promise<{ text: string; version: number } | undefined> {
     const uri = this.repository.uriFor(path);
 
     const open = vscode.workspace.textDocuments.find(
       (document) => document.uri.toString() === uri.toString()
     );
-    if (open) return open.getText();
+    if (open) return { text: open.getText(), version: open.version };
 
     try {
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      return Buffer.from(bytes).toString('utf8');
+      const [stat, bytes] = await Promise.all([
+        vscode.workspace.fs.stat(uri),
+        vscode.workspace.fs.readFile(uri)
+      ]);
+      return { text: Buffer.from(bytes).toString('utf8'), version: stat.mtime };
     } catch {
       // Deleted locally, or binary and unreadable as text; either way there is nothing
       // useful to line up against the merge base.

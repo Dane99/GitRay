@@ -13,11 +13,11 @@ export type GhState =
   | { kind: 'ok'; login: string; nameWithOwner: string }
   | { kind: 'missing' }
   | { kind: 'unauthenticated' }
+  | { kind: 'offline'; message: string }
   | { kind: 'no-repo'; message: string };
 
 interface RawAuthor {
   login?: string;
-  is_bot?: boolean;
 }
 
 interface RawFile {
@@ -84,8 +84,8 @@ export class Gh {
     try {
       login = (await this.gh(['api', 'user', '--jq', '.login'])).trim();
       if (!login) return { kind: 'unauthenticated' };
-    } catch {
-      return { kind: 'unauthenticated' };
+    } catch (error) {
+      return classifyProbeFailure(error);
     }
 
     try {
@@ -138,6 +138,36 @@ export class Gh {
   async openInBrowser(prNumber: number): Promise<void> {
     await this.gh(['pr', 'view', String(prNumber), '--web']);
   }
+
+  /**
+   * Check out the pull request's branch via gh rather than raw git: gh resolves fork
+   * heads, which do not exist as branches on `origin`, and configures the branch so a
+   * later `git push` goes back to the contributor's repository.
+   */
+  async checkout(prNumber: number): Promise<void> {
+    await this.gh(['pr', 'checkout', String(prNumber)]);
+  }
+}
+
+/**
+ * Decide what a failed `gh api user` means.
+ *
+ * Being logged out and being offline both surface here, and they need different advice:
+ * telling someone on a plane to run `gh auth login` sends them debugging credentials that
+ * are fine. gh reports missing auth before touching the network, with a message that
+ * names the fix, so anything else — DNS, timeouts, proxies — is treated as connectivity.
+ */
+function classifyProbeFailure(error: unknown): GhState {
+  if (error instanceof CommandError) {
+    if (/HTTP 401|Unauthorized|not logged in|authentication token|gh auth login/i.test(error.stderr)) {
+      return { kind: 'unauthenticated' };
+    }
+    return {
+      kind: 'offline',
+      message: error.stderr.trim().split('\n')[0] || 'GitHub could not be reached.'
+    };
+  }
+  return { kind: 'offline', message: String(error) };
 }
 
 function toPullRequest(raw: RawPullRequest): PullRequest {
@@ -154,7 +184,6 @@ function toPullRequest(raw: RawPullRequest): PullRequest {
     title: raw.title?.trim() || '(no title)',
     // A deleted account shows up with a null author; "ghost" is what GitHub itself calls it.
     author: raw.author?.login ?? 'ghost',
-    authorIsBot: raw.author?.is_bot === true,
     headRefName: raw.headRefName ?? '',
     headRefOid: raw.headRefOid as string,
     baseRefName: raw.baseRefName ?? '',

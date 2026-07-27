@@ -46,8 +46,3 @@ export async function updateSetting<T>(
 ): Promise<void> {
   await vscode.workspace.getConfiguration('gitray').update(key, value, target);
 }
-
-/** Does a change event touch any setting we care about? */
-export function affectsGitRay(event: vscode.ConfigurationChangeEvent): boolean {
-  return event.affectsConfiguration('gitray');
-}
