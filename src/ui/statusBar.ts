@@ -6,9 +6,10 @@
  */
 
 import * as vscode from 'vscode';
+import { behindMainline } from '../core/types.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
-import { relativeTime } from './hover.js';
+import { codeSpan, relativeTime } from './hover.js';
 
 export class StatusBar implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
@@ -46,16 +47,22 @@ export class StatusBar implements vscode.Disposable {
       return;
     }
 
-    if (pullRequests.length === 0) {
-      // Nothing open means nothing to say. Hiding beats showing a zero.
+    const mainline = this.store.mainline();
+    const behind = behindMainline(mainline);
+
+    if (pullRequests.length === 0 && behind.count === 0) {
+      // Nothing open and nothing landed means nothing to say. Hiding beats showing a zero.
       this.item.hide();
       return;
     }
 
-    this.item.text =
-      collisions > 0
-        ? `$(radio-tower) ${pullRequests.length} · ⟂ ${collisions}`
-        : `$(radio-tower) ${pullRequests.length}`;
+    // The counts read left to right as "open · behind · colliding", and any of the three
+    // can be absent. Showing a zero for one of them would make the other two harder to read.
+    const parts = ['$(radio-tower)'];
+    if (pullRequests.length > 0) parts.push(String(pullRequests.length));
+    if (behind.count > 0) parts.push(`$(git-merge) ${behind.display}`);
+    if (collisions > 0) parts.push(`⟂ ${collisions}`);
+    this.item.text = parts.join(' ');
 
     this.item.backgroundColor =
       collisions > 0 ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
@@ -64,7 +71,12 @@ export class StatusBar implements vscode.Disposable {
     const lines = [
       '**GitRay**',
       '',
-      `${pullRequests.length} open pull ${pullRequests.length === 1 ? 'request' : 'requests'} from ${authors.size} ${authors.size === 1 ? 'collaborator' : 'collaborators'}`,
+      pullRequests.length > 0
+        ? `${pullRequests.length} open pull ${pullRequests.length === 1 ? 'request' : 'requests'} from ${authors.size} ${authors.size === 1 ? 'collaborator' : 'collaborators'}`
+        : 'No open pull requests',
+      behind.count > 0
+        ? `\n\`${codeSpan(mainline?.branch ?? 'main')}\` is ${behind.capped ? 'more than ' : ''}${behind.count} ${behind.count === 1 && !behind.capped ? 'commit' : 'commits'} ahead of where your branch left it`
+        : '',
       collisions > 0
         ? `\n$(warning) **${collisions} ${collisions === 1 ? 'collision' : 'collisions'}** with your current work`
         : '\nNo overlap with your current work',

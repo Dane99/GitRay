@@ -9,6 +9,16 @@
 
 export const HUE_COUNT = 8;
 
+/**
+ * The mainline's slot, kept outside the rotation on purpose.
+ *
+ * "Main has moved under you" is a different kind of statement from "Priya is editing
+ * this", and giving it a collaborator hue would invite reading it as one more person.
+ * A reserved slot means the mainline always looks like the mainline, whoever is on the
+ * team this week.
+ */
+export const MAINLINE_HUE = -1;
+
 /** FNV-1a. Chosen for being stable, tiny, and dependency-free — not for cryptography. */
 export function hashLogin(login: string): number {
   let hash = 0x811c9dc5;
@@ -22,6 +32,7 @@ export function hashLogin(login: string): number {
 
 /** Theme color id for a hue slot. */
 export function hueColorId(slot: number): string {
+  if (slot === MAINLINE_HUE) return 'gitray.mainlineForeground';
   return `gitray.collaborator${(slot % HUE_COUNT) + 1}`;
 }
 

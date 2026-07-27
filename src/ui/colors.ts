@@ -11,12 +11,14 @@
  */
 
 import * as vscode from 'vscode';
-import { HUE_COUNT } from '../model/palette.js';
+import { HUE_COUNT, MAINLINE_HUE } from '../model/palette.js';
 
 interface Palette {
   hues: string[];
   collision: string;
   nearMiss: string;
+  /** Deliberately desaturated: the mainline is a place, not a person. */
+  mainline: string;
 }
 
 const DARK: Palette = {
@@ -31,7 +33,8 @@ const DARK: Palette = {
     '#f5866b'
   ],
   collision: '#ffa657',
-  nearMiss: '#d0a85c'
+  nearMiss: '#d0a85c',
+  mainline: '#9aa7b8'
 };
 
 const LIGHT: Palette = {
@@ -46,7 +49,8 @@ const LIGHT: Palette = {
     '#c2400f'
   ],
   collision: '#b5540b',
-  nearMiss: '#8a6a1f'
+  nearMiss: '#8a6a1f',
+  mainline: '#5a6675'
 };
 
 const HIGH_CONTRAST_DARK: Palette = {
@@ -61,7 +65,8 @@ const HIGH_CONTRAST_DARK: Palette = {
     '#ffab96'
   ],
   collision: '#ffc48a',
-  nearMiss: '#e6c68a'
+  nearMiss: '#e6c68a',
+  mainline: '#c3ced9'
 };
 
 const HIGH_CONTRAST_LIGHT: Palette = {
@@ -76,7 +81,8 @@ const HIGH_CONTRAST_LIGHT: Palette = {
     '#96300a'
   ],
   collision: '#8a3f06',
-  nearMiss: '#6b5010'
+  nearMiss: '#6b5010',
+  mainline: '#3d4652'
 };
 
 export function activePalette(): Palette {
@@ -93,6 +99,7 @@ export function activePalette(): Palette {
 }
 
 export function hueHex(slot: number): string {
+  if (slot === MAINLINE_HUE) return activePalette().mainline;
   return activePalette().hues[slot % HUE_COUNT];
 }
 

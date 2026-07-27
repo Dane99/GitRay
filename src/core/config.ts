@@ -15,6 +15,9 @@ export interface Config {
   decorationMode: DecorationMode;
   showInlineAnnotations: boolean;
   fetchPullRequestRefs: boolean;
+  trackMainlineDrift: boolean;
+  /** Empty means "detect it", which is what almost everyone should leave it as. */
+  mainlineBranch: string;
   mutedPullRequests: number[];
   mutedAuthors: string[];
   ignoreGlobs: string[];
@@ -32,6 +35,8 @@ export function readConfig(scope?: vscode.Uri): Config {
     decorationMode: raw.get<DecorationMode>('decorations.mode', 'ambient'),
     showInlineAnnotations: raw.get<boolean>('decorations.showInlineAnnotations', true),
     fetchPullRequestRefs: raw.get<boolean>('fetchPullRequestRefs', true),
+    trackMainlineDrift: raw.get<boolean>('mainline.trackDrift', true),
+    mainlineBranch: raw.get<string>('mainline.branch', '').trim(),
     mutedPullRequests: raw.get<number[]>('mutedPullRequests', []),
     mutedAuthors: raw.get<string[]>('mutedAuthors', []).map((a) => a.toLowerCase()),
     ignoreGlobs: raw.get<string[]>('ignoreGlobs', []),

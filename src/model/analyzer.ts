@@ -1,5 +1,5 @@
 /**
- * Turns "what collaborators changed" plus "what you have on screen" into renderable
+ * Turns "what everyone else changed" plus "what you have on screen" into renderable
  * regions with a severity.
  *
  * The flow for one file, per pull request:
@@ -12,15 +12,23 @@
  * Their ranges and yours are compared in base coordinates to decide severity, then their
  * ranges go through the line map to decide where to draw. Both come out of the same
  * alignment, which is why collision detection costs almost nothing on top of rendering.
+ *
+ * The mainline is analyzed as one more collaborator, and it is the cheapest one of the
+ * lot. Its base is where your branch left the mainline — the commit this file already
+ * aligns the buffer against, to work out which edits are yours — so its regions cost one
+ * diff and reuse an alignment that was computed anyway. See `mainlineRegions`.
  */
 
 import type {
   ChangeRegion,
   FileAnalysis,
   LineRange,
+  MainlineCommit,
+  MainlineState,
   PullRequest,
   ResolvedRegion
 } from '../core/types.js';
+import { compareOrigins } from '../core/types.js';
 import type { Git } from '../providers/git.js';
 import { prRef } from '../providers/git.js';
 import { alignLines, splitLines, type Alignment } from './lineMap.js';
@@ -31,6 +39,8 @@ import { log } from '../core/log.js';
 export interface AnalyzeOptions {
   proximityLines: number;
   maxRegionsPerFile: number;
+  /** Where the mainline is, when drift tracking is on and the branch is known. */
+  mainline?: MainlineState;
 }
 
 /**
@@ -42,12 +52,15 @@ export interface AnalyzeOptions {
  */
 const MAX_BLOBS = 256;
 const MAX_ALIGNMENTS = 64;
+const MAX_DRIFT = 256;
 
 export class Analyzer {
   private readonly mergeBases = new Map<string, string | undefined>();
   private readonly mainlines = new Map<string, string | undefined>();
   private readonly blobs = new Map<string, string[]>();
   private readonly alignments = new Map<string, Alignment>();
+  /** Mainline drift per file, keyed by the base and tip it was computed between. */
+  private readonly drift = new Map<string, ChangeRegion[]>();
 
   constructor(
     private readonly git: Git,
@@ -60,6 +73,7 @@ export class Analyzer {
     this.mainlines.clear();
     this.blobs.clear();
     this.alignments.clear();
+    this.drift.clear();
   }
 
   /** Drop cached alignments for one file, e.g. when it was saved or reverted. */
@@ -70,7 +84,7 @@ export class Analyzer {
   }
 
   /**
-   * Analyze one file against every pull request that touches it.
+   * Analyze one file against every pull request that touches it, and against the mainline.
    *
    * `documentVersion` only participates in cache keying; pass the editor's version so
    * alignments are reused between decoration passes for an unchanged buffer.
@@ -86,7 +100,10 @@ export class Analyzer {
       pr.files.some((file) => file.path === path)
     );
 
-    if (relevant.length === 0) {
+    // The mainline is checked even with nothing open, which is the point: a pull request
+    // that merged is gone from the list at exactly the moment its overlap stops being a
+    // forecast. Returning early on an empty list would go quiet right then.
+    if (relevant.length === 0 && !options.mainline) {
       return { path, regions: [], degraded: false };
     }
 
@@ -131,6 +148,18 @@ export class Analyzer {
       }
     }
 
+    if (options.mainline) {
+      resolved.push(
+        ...(await this.mainlineRegions(
+          path,
+          options.mainline,
+          bufferLines,
+          documentVersion,
+          options.proximityLines
+        ))
+      );
+    }
+
     if (resolved.length > options.maxRegionsPerFile) {
       // A wholesale reformat or generated-file churn can produce thousands of regions.
       // Rendering them all would be noise anyway, so fall back to a file-level signal.
@@ -138,8 +167,115 @@ export class Analyzer {
       return { path, regions: [], degraded: true };
     }
 
-    resolved.sort((a, b) => a.range.start - b.range.start || a.prNumber - b.prNumber);
+    resolved.sort(
+      (a, b) => a.range.start - b.range.start || compareOrigins(a.origin, b.origin)
+    );
     return { path, regions: resolved, degraded };
+  }
+
+  /**
+   * What landed on the mainline since your branch left it, for one file.
+   *
+   * The coordinate system falls out for free. Your own edits are already measured against
+   * `mainline.base` — that is what `ownEdits` does, to keep upstream work from being
+   * mistaken for yours — so the diff from that same commit to the mainline tip lands in
+   * exactly the coordinates severity has to be judged in. No remapping, and the alignment
+   * is the one the pull request pass already paid for.
+   *
+   * Ambient drift is dropped rather than rendered. An open pull request is a forecast, so
+   * "someone is working here" earns a quiet mark; a merged commit is history, and marking
+   * every line the mainline has moved since you branched would light up half the repository
+   * with things that have nothing to do with you. It is only news where it meets your work.
+   */
+  private async mainlineRegions(
+    path: string,
+    mainline: MainlineState,
+    bufferLines: string[],
+    documentVersion: number,
+    proximityLines: number
+  ): Promise<ResolvedRegion[]> {
+    if (mainline.tip === mainline.base) return [];
+
+    const regions = await this.driftRegions(path, mainline);
+    if (regions.length === 0) return [];
+
+    const alignment = await this.alignmentFor(
+      path,
+      mainline.base,
+      bufferLines,
+      documentVersion
+    );
+
+    const resolved: ResolvedRegion[] = [];
+    for (const region of regions) {
+      const proximity = classifyProximity(
+        region.baseRange,
+        alignment.localEdits,
+        proximityLines
+      );
+      if (proximity.severity === 'ambient') continue;
+
+      resolved.push({
+        ...region,
+        range: alignment.toBufferRange(region.baseRange),
+        severity: proximity.severity,
+        overlapsWith: proximity.nearest,
+        distance: proximity.distance
+      });
+    }
+    return resolved;
+  }
+
+  /**
+   * The mainline's changes to one file, in the coordinates of where you left it.
+   *
+   * Cached against both ends of the range, so the entry falls out on its own when the
+   * mainline is fetched forward or HEAD moves, without anything having to invalidate it.
+   */
+  private async driftRegions(
+    path: string,
+    mainline: MainlineState
+  ): Promise<ChangeRegion[]> {
+    const key = `${mainline.base}\0${mainline.tip}\0${path}`;
+    const cached = this.drift.get(key);
+    if (cached) return cached;
+
+    const [diffs, commits] = await Promise.all([
+      this.git.diffRange(mainline.base, mainline.tip, [path]),
+      this.git.commitsIn(mainline.base, mainline.tip, path)
+    ]);
+
+    // One origin object shared by every region in the file: they all describe the same
+    // set of commits, and the surfaces read it rather than copying out of it.
+    const origin = {
+      kind: 'mainline' as const,
+      branch: mainline.branch,
+      commits
+    };
+    const author = attributeDrift(commits, mainline.branch);
+
+    const regions: ChangeRegion[] = [];
+    for (const file of diffs) {
+      if (file.isBinary) continue;
+      // A pathspec can still return the pre-rename path; accept either side.
+      if (file.path !== path && file.oldPath !== path) continue;
+
+      for (const hunk of file.hunks) {
+        regions.push({
+          origin,
+          author,
+          baseSha: mainline.base,
+          baseRange: hunk.baseRange,
+          kind: hunk.kind,
+          removed: hunk.removed,
+          added: hunk.added
+        });
+      }
+    }
+
+    evict(this.drift, MAX_DRIFT);
+    this.drift.set(key, regions);
+    return regions;
   }
 
   /**
@@ -220,7 +356,7 @@ export class Analyzer {
 
       for (const hunk of file.hunks) {
         regions.push({
-          prNumber: pr.number,
+          origin: { kind: 'pullRequest', prNumber: pr.number },
           author: pr.author,
           baseSha,
           baseRange: hunk.baseRange,
@@ -268,6 +404,20 @@ export class Analyzer {
     this.blobs.set(key, lines);
     return lines;
   }
+}
+
+/**
+ * Who to credit for mainline drift in one file.
+ *
+ * A single author gets named, because "Priya's change landed on main and it touches your
+ * lines" is the useful sentence. Once several people are involved there is no honest way
+ * to pick one, and the branch itself is the truthful answer — the hover carries the full
+ * list either way.
+ */
+function attributeDrift(commits: readonly MainlineCommit[], branch: string): string {
+  const authors = new Set(commits.map((commit) => commit.author));
+  const only = commits[0];
+  return authors.size === 1 && only ? only.author : branch;
 }
 
 /** Drop the oldest entry once a cache is full. Insertion order is Map's iteration order. */

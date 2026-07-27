@@ -14,6 +14,7 @@
  */
 
 import * as vscode from 'vscode';
+import { behindMainline, prNumberOf } from '../core/types.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import { hueColorId } from '../model/palette.js';
@@ -43,6 +44,8 @@ interface RadarHotspot {
   collisions: number;
   nearMisses: number;
   contributors: { number: number; author: string; hue: number }[];
+  /** True when something already merged touches this file. */
+  merged: boolean;
 }
 
 interface RadarPayload {
@@ -52,6 +55,11 @@ interface RadarPayload {
     collisions: number;
     lastSync: string | undefined;
     message: string | undefined;
+    /** How far the mainline has moved since your branch left it; 0 when it has not. */
+    behind: number;
+    /** The same count as it should be shown — `20+` when the log hit its cap. */
+    behindDisplay: string;
+    mainlineBranch: string | undefined;
   };
   hotspots: RadarHotspot[];
   pullRequests: RadarPullRequest[];
@@ -161,7 +169,10 @@ export class RadarPanel implements vscode.Disposable {
       updated: relativeTime(pr.updatedAt),
       isDraft: pr.isDraft,
       files: pr.files.map((file) => {
-        const regions = analysisFor(file.path)?.regions.filter((r) => r.prNumber === pr.number) ?? [];
+        const regions =
+          analysisFor(file.path)?.regions.filter(
+            (r) => prNumberOf(r.origin) === pr.number
+          ) ?? [];
         return {
           path: file.path,
           additions: file.additions,
@@ -172,6 +183,8 @@ export class RadarPanel implements vscode.Disposable {
       })
     }));
 
+    const mainline = this.store.mainline();
+    const behind = behindMainline(mainline);
     const hotspots = this.buildHotspots(radarPullRequests);
 
     return {
@@ -183,7 +196,10 @@ export class RadarPanel implements vscode.Disposable {
           ? relativeTime(new Date(status.lastSync).toISOString())
           : undefined,
         message:
-          status.state === 'degraded' || status.state === 'error' ? status.message : undefined
+          status.state === 'degraded' || status.state === 'error' ? status.message : undefined,
+        behind: behind.count,
+        behindDisplay: behind.display,
+        mainlineBranch: mainline?.branch
       },
       hotspots,
       pullRequests: radarPullRequests,
@@ -198,22 +214,46 @@ export class RadarPanel implements vscode.Disposable {
    */
   private buildHotspots(pullRequests: readonly RadarPullRequest[]): RadarHotspot[] {
     const byPath = new Map<string, RadarHotspot>();
+    const entryFor = (path: string): RadarHotspot => {
+      let entry = byPath.get(path);
+      if (!entry) {
+        entry = { path, collisions: 0, nearMisses: 0, contributors: [], merged: false };
+        byPath.set(path, entry);
+      }
+      return entry;
+    };
 
     for (const pr of pullRequests) {
       for (const file of pr.files) {
-        let entry = byPath.get(file.path);
-        if (!entry) {
-          entry = { path: file.path, collisions: 0, nearMisses: 0, contributors: [] };
-          byPath.set(file.path, entry);
-        }
+        const entry = entryFor(file.path);
         entry.contributors.push({ number: pr.number, author: pr.author, hue: pr.hue });
         entry.collisions += file.collisions;
         entry.nearMisses += file.nearMisses;
       }
     }
 
+    // Files where something that already merged meets your work. Most of these have no
+    // open pull request behind them at all, so the loop above cannot have found them —
+    // which was the old blind spot: the radar went dark on exactly the conflicts that
+    // had stopped being hypothetical.
+    for (const analysis of this.scanner.hotFiles()) {
+      const drift = analysis.regions.filter((region) => region.origin.kind === 'mainline');
+      if (drift.length === 0) continue;
+
+      const entry = entryFor(analysis.path);
+      entry.merged = true;
+      entry.collisions += drift.filter((region) => region.severity === 'collision').length;
+      entry.nearMisses += drift.filter((region) => region.severity === 'nearMiss').length;
+    }
+
     return [...byPath.values()]
-      .filter((entry) => entry.collisions > 0 || entry.nearMisses > 0 || entry.contributors.length > 1)
+      .filter(
+        (entry) =>
+          entry.collisions > 0 ||
+          entry.nearMisses > 0 ||
+          entry.merged ||
+          entry.contributors.length > 1
+      )
       .sort(
         (a, b) =>
           b.collisions - a.collisions ||

@@ -123,7 +123,8 @@ export class EditorController implements vscode.Disposable {
         this.store.allPullRequests(),
         {
           proximityLines: config.proximityLines,
-          maxRegionsPerFile: config.maxRegionsPerFile
+          maxRegionsPerFile: config.maxRegionsPerFile,
+          mainline: config.trackMainlineDrift ? this.store.mainline() : undefined
         }
       );
     } catch (error) {
@@ -143,7 +144,13 @@ export class EditorController implements vscode.Disposable {
     const pullRequests = new Map<number, PullRequest>(
       this.store.allPullRequests().map((pr) => [pr.number, pr])
     );
-    this.painter.paint(editor, analysis, pullRequests, (author) => this.store.hueFor(author), config);
+    this.painter.paint(
+      editor,
+      analysis,
+      pullRequests,
+      (region) => this.store.hueForRegion(region),
+      config
+    );
   }
 
   analysisFor(uri: vscode.Uri): FileAnalysis | undefined {

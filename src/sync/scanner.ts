@@ -3,16 +3,19 @@
  *
  * The editor decorations only know about files you have open, but the question "am I
  * about to conflict with anyone?" is about your whole branch. This scans the intersection
- * of two sets — files you have diverged on, and files an open pull request touches —
- * which is small in practice even in a busy repository, and is where every real conflict
- * must live.
+ * of two sets — files you have diverged on, and files someone else touched — which is
+ * small in practice even in a busy repository, and is where every real conflict must live.
+ *
+ * "Someone else" includes the mainline. Work that already merged is not a forecast any
+ * more, so the scan runs even when nothing is open, on the strength of the mainline having
+ * moved alone.
  *
  * Unsaved editor content is preferred over what is on disk, so a conflict you just typed
  * shows up before you save.
  */
 
 import * as vscode from 'vscode';
-import type { FileAnalysis, PullRequest } from '../core/types.js';
+import type { FileAnalysis, MainlineState, PullRequest } from '../core/types.js';
 import type { Config } from '../core/config.js';
 import { log } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
@@ -78,23 +81,17 @@ export class CollisionScanner implements vscode.Disposable {
 
   private async runScan(config: Config): Promise<void> {
     const pullRequests = this.store.allPullRequests();
-    if (pullRequests.length === 0) {
+    const mainline = config.trackMainlineDrift ? this.store.mainline() : undefined;
+    const drifted = mainline !== undefined && mainline.tip !== mainline.base;
+
+    // With nothing open and a mainline that has not moved there is genuinely nothing to
+    // compare against. Either one on its own is reason enough to scan.
+    if (pullRequests.length === 0 && !drifted) {
       this.publish(new Map());
       return;
     }
 
-    const touched = new Set(this.store.allTouchedPaths());
-    const candidates = new Set<string>();
-
-    // One `git diff --name-only` per distinct merge base — normally just one, since every
-    // pull request branches off the same base commit.
-    for (const baseSha of await this.distinctMergeBases(pullRequests)) {
-      for (const path of await this.repository.git.changedSince(baseSha)) {
-        if (touched.has(path) && !matchesAny(path, config.ignoreGlobs)) {
-          candidates.add(path);
-        }
-      }
-    }
+    const candidates = await this.candidates(config, pullRequests, drifted ? mainline : undefined);
 
     if (candidates.size > MAX_FILES) {
       log.debug(`collision scan: ${candidates.size} candidates exceeds cap, truncating`);
@@ -107,12 +104,53 @@ export class CollisionScanner implements vscode.Disposable {
 
       const analysis = await this.analyzer.analyze(path, current.text, current.version, pullRequests, {
         proximityLines: config.proximityLines,
-        maxRegionsPerFile: config.maxRegionsPerFile
+        maxRegionsPerFile: config.maxRegionsPerFile,
+        mainline
       });
       if (analysis.regions.length > 0) results.set(path, analysis);
     }
 
     this.publish(results);
+  }
+
+  /**
+   * Files worth analyzing: the ones you have diverged on that someone else also touched.
+   *
+   * "Someone else" now has two meanings, and they need different intersections. An open
+   * pull request contributes the files in its own index; the mainline contributes the
+   * files that changed between where you left it and where it is now. Both are intersected
+   * with your own divergence, because a conflict cannot live anywhere else.
+   */
+  private async candidates(
+    config: Config,
+    pullRequests: readonly PullRequest[],
+    mainline: MainlineState | undefined
+  ): Promise<Set<string>> {
+    const candidates = new Set<string>();
+    const keep = (path: string, theirs: ReadonlySet<string>) =>
+      theirs.has(path) && !matchesAny(path, config.ignoreGlobs);
+
+    if (pullRequests.length > 0) {
+      const touched = new Set(this.store.allTouchedPaths());
+      // One `git diff --name-only` per distinct merge base — normally just one, since
+      // every pull request branches off the same base commit.
+      for (const baseSha of await this.distinctMergeBases(pullRequests)) {
+        for (const path of await this.repository.git.changedSince(baseSha)) {
+          if (keep(path, touched)) candidates.add(path);
+        }
+      }
+    }
+
+    if (mainline) {
+      const landed = new Set(
+        await this.repository.git.changedPaths(mainline.base, mainline.tip)
+      );
+      for (const path of await this.repository.git.changedSince(mainline.base)) {
+        if (keep(path, landed)) candidates.add(path);
+      }
+    }
+
+    return candidates;
   }
 
   /** One merge base per pull request, answered from the analyzer's cache. */

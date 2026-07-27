@@ -40,7 +40,15 @@
     renderHotspots(data.hotspots || [], data.hueColorIds || []);
     renderLanes(data.pullRequests || [], data.hueColorIds || []);
 
-    const isEmpty = (data.pullRequests || []).length === 0;
+    // Mainline drift is content in its own right: a branch that is behind is worth a
+    // screen even with nothing open, which used to be the case that rendered empty. The
+    // `behind` term matters on its own — drift that overlaps nothing produces no hot spots,
+    // and without it the summary would say "12 commits you do not have" directly above an
+    // empty state claiming nothing is in flight.
+    const isEmpty =
+      (data.pullRequests || []).length === 0 &&
+      (data.hotspots || []).length === 0 &&
+      !(data.summary.behind > 0);
     emptyEl.hidden = !isEmpty;
     if (isEmpty) renderEmpty(data.summary.message);
   }
@@ -54,6 +62,17 @@
     summaryEl.appendChild(
       stat(summary.collaborators, plural(summary.collaborators, 'collaborator', 'collaborators'))
     );
+
+    if (summary.behind > 0) {
+      // `behindDisplay` rather than the raw count: the commit log is capped, so a long run
+      // shows as "20+" instead of stating a floor as though it were exact.
+      const behind = stat(
+        summary.behindDisplay || summary.behind,
+        `${plural(summary.behind, 'commit', 'commits')} on ${summary.mainlineBranch || 'the mainline'} you do not have`
+      );
+      behind.classList.add('merged');
+      summaryEl.appendChild(behind);
+    }
 
     const collisions = stat(
       summary.collisions,
@@ -104,6 +123,13 @@
 
       const stack = document.createElement('div');
       stack.className = 'stack';
+      // The mainline pip leads: what already landed outranks what might.
+      if (hotspot.merged) {
+        const pip = document.createElement('span');
+        pip.className = 'pip is-merged';
+        pip.title = 'Already merged into the mainline';
+        stack.appendChild(pip);
+      }
       for (const contributor of hotspot.contributors) {
         const pip = document.createElement('span');
         pip.className = 'pip';
@@ -128,6 +154,10 @@
       tag.className = 'tag near';
       tag.textContent = `${hotspot.nearMisses} near`;
       tag.title = 'Close to your edits, but not overlapping';
+    } else if (hotspot.merged) {
+      tag.className = 'tag quiet';
+      tag.textContent = 'merged';
+      tag.title = 'Work that already landed on the mainline touches this file';
     } else {
       tag.className = 'tag quiet';
       const count = hotspot.contributors.length;

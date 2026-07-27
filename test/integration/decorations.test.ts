@@ -69,7 +69,7 @@ function fakeEditor(cursorLine = 0) {
 
 function region(line: number, severity: Severity): ResolvedRegion {
   return {
-    prNumber: 7395,
+    origin: { kind: 'pullRequest', prNumber: 7395 },
     author: 'armanmikoyan',
     baseSha: 'abc1234',
     baseRange: { start: line, end: line + 1 },
@@ -79,6 +79,34 @@ function region(line: number, severity: Severity): ResolvedRegion {
     range: { start: line, end: line + 1 },
     severity,
     distance: severity === 'collision' ? 0 : 5
+  };
+}
+
+/** The same shape, but for something that already merged into the mainline. */
+function mergedRegion(line: number, severity: Severity, prNumber?: number): ResolvedRegion {
+  return {
+    origin: {
+      kind: 'mainline',
+      branch: 'master',
+      commits: [
+        {
+          sha: 'a1b2c3d',
+          author: 'jonchurch',
+          subject: prNumber ? `fix(req.get): normalise header keys (#${prNumber})` : 'hotfix header lookup',
+          date: new Date().toISOString(),
+          prNumber
+        }
+      ]
+    },
+    author: 'jonchurch',
+    baseSha: 'abc1234',
+    baseRange: { start: line, end: line + 1 },
+    kind: 'modify',
+    removed: ['  const lc = name;'],
+    added: ['  const lc = name.toLowerCase();'],
+    range: { start: line, end: line + 1 },
+    severity,
+    distance: severity === 'collision' ? 0 : 2
   };
 }
 
@@ -111,6 +139,8 @@ const config = {
   decorationMode: 'ambient' as const,
   showInlineAnnotations: true,
   fetchPullRequestRefs: true,
+  trackMainlineDrift: true,
+  mainlineBranch: '',
   mutedPullRequests: [],
   mutedAuthors: [],
   ignoreGlobs: [],
@@ -176,6 +206,65 @@ test('a collision emits an inline annotation naming the author and pull request'
   assert.match(annotation, /armanmikoyan/);
   assert.match(annotation, /#7395/);
   assert.match(annotation, /⟂/, 'collisions use the perpendicular mark');
+});
+
+test('merged work says so, and speaks about the rebase rather than the merge', () => {
+  // The tense is the whole distinction. An open pull request *would* conflict and might yet
+  // move; something already on the mainline *will* meet you, whatever anyone does next.
+  const calls = paint(analysisWith(mergedRegion(1, 'collision')));
+  const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
+
+  assert.ok(hover, 'merged drift should still be explainable');
+  assert.match(hover, /has moved under you/, 'the card should name what happened');
+  assert.match(hover, /master/, 'and which branch it happened on');
+  assert.match(hover, /overlaps your own edit/i);
+  assert.match(hover, /next rebase will stop here/i, 'a merge is not what resolves this');
+  assert.doesNotMatch(hover, /Merging will need a decision/, 'that is the open-PR wording');
+});
+
+test('a merged commit that kept its pull request number stays linkable', () => {
+  const calls = paint(analysisWith(mergedRegion(1, 'collision', 412)));
+  const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
+
+  assert.ok(hover);
+  assert.match(hover, /command:gitray\.openPullRequest/, 'should offer the original discussion');
+  assert.match(hover, /#412/);
+});
+
+test('a merged commit with no recoverable number offers no pull request link', () => {
+  // Fabricating one would open somebody else's discussion, which is worse than no link.
+  const calls = paint(analysisWith(mergedRegion(1, 'collision')));
+  const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
+
+  assert.ok(hover);
+  assert.doesNotMatch(hover, /command:gitray\.openPullRequest/);
+  assert.match(hover, /command:gitray\.diffWithMainline/, 'comparing is still offered');
+});
+
+test('the inline annotation marks merged work as merged, not as a pull request', () => {
+  const calls = paint(analysisWith(mergedRegion(1, 'collision')));
+  const annotation = calls
+    .flatMap((c) => c.options)
+    .map((o) => o.renderOptions?.after?.contentText)
+    .find((text): text is string => typeof text === 'string');
+
+  assert.ok(annotation, 'expected an end-of-line annotation');
+  assert.match(annotation, /merged/);
+  assert.match(annotation, /⟂/, 'it is still a collision');
+  assert.doesNotMatch(annotation, /#\d+/, 'there is no open pull request to name');
+});
+
+test('merged work outranks an open pull request on the same line', () => {
+  // Both are true, but only one of them has already happened.
+  const calls = paint(analysisWith(region(1, 'collision'), mergedRegion(1, 'collision')));
+  const annotation = calls
+    .flatMap((c) => c.options)
+    .map((o) => o.renderOptions?.after?.contentText)
+    .find((text): text is string => typeof text === 'string');
+
+  assert.ok(annotation);
+  assert.match(annotation, /^⟂ jonchurch · merged/, 'the merged change should lead');
+  assert.match(annotation, /\+1/, 'and the pull request should still be counted');
 });
 
 test('a multi-line run spans from the first line to the end of the last', () => {

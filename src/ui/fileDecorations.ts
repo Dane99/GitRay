@@ -43,18 +43,25 @@ export class GitRayFileDecorationProvider
     if (!path) return undefined;
 
     const summary = this.store.fileSummary(path);
-    if (!summary) return undefined;
-
     const analysis = this.scanner.analysisFor(path);
-    const collisions =
-      analysis?.regions.filter((region) => region.severity === 'collision').length ?? 0;
+    const regions = analysis?.regions ?? [];
+    const collisions = regions.filter((region) => region.severity === 'collision').length;
+    const drifted = regions.some((region) => region.origin.kind === 'mainline');
 
-    const authors = summary.authors;
+    // A merged change leaves no open pull request behind, so there is no file-level index
+    // entry to hang a badge on. The scan result is the only evidence such a file exists,
+    // and it is the one file most in need of a badge.
+    if (!summary && !drifted) return undefined;
+
+    const authors = summary?.authors ?? [];
     const tooltip = [
       collisions > 0
         ? `GitRay: ${collisions} ${collisions === 1 ? 'collision' : 'collisions'} with your work`
-        : `GitRay: ${authors.length} ${authors.length === 1 ? 'collaborator' : 'collaborators'} editing this file`,
+        : authors.length > 0
+          ? `GitRay: ${authors.length} ${authors.length === 1 ? 'collaborator' : 'collaborators'} editing this file`
+          : 'GitRay: work that already merged touches this file',
       '',
+      ...(drifted ? [`${this.store.mainline()?.branch ?? 'main'} — already merged`] : []),
       ...this.store.pullRequestsForPath(path).map(
         (pr) => `#${pr.number} ${pr.title} — ${pr.author}, ${relativeTime(pr.updatedAt)}`
       )
@@ -64,6 +71,15 @@ export class GitRayFileDecorationProvider
       return {
         badge: '⟂',
         color: new vscode.ThemeColor('gitray.collisionForeground'),
+        tooltip,
+        propagate: true
+      };
+    }
+
+    if (authors.length === 0) {
+      return {
+        badge: '↧',
+        color: new vscode.ThemeColor('gitray.mainlineForeground'),
         tooltip,
         propagate: true
       };

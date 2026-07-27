@@ -1,19 +1,21 @@
 /**
  * The GitRay sidebar.
  *
- * Ordered by what deserves attention: anything colliding with your work first, then the
- * open pull requests as ambient context. The collisions section disappears entirely when
- * there is nothing in it — an empty "Collisions (0)" header trains people to ignore the
- * one thing this view exists to surface.
+ * Ordered by what deserves attention: what has already landed on the mainline, then
+ * anything colliding with your work, then the open pull requests as ambient context. The
+ * collisions section disappears entirely when there is nothing in it — an empty
+ * "Collisions (0)" header trains people to ignore the one thing this view exists to
+ * surface.
  */
 
 import * as vscode from 'vscode';
 import type { FileAnalysis, PullRequest, ResolvedRegion } from '../core/types.js';
+import { behindMainline, prNumberOf } from '../core/types.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import type { Repository } from '../providers/repository.js';
 import { hueColorId } from '../model/palette.js';
-import { relativeTime } from './hover.js';
+import { codeSpan, escapeMarkdown, regionHeadline, relativeTime } from './hover.js';
 
 /**
  * Which welcome content the view should show when it has no rows.
@@ -26,6 +28,7 @@ type ViewState = 'starting' | 'empty' | 'content';
 
 type Node =
   | { kind: 'status' }
+  | { kind: 'mainline' }
   | { kind: 'collisionsHeader' }
   | { kind: 'collisionFile'; analysis: FileAnalysis }
   | { kind: 'collisionRegion'; analysis: FileAnalysis; region: ResolvedRegion }
@@ -86,6 +89,8 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     switch (node.kind) {
       case 'status':
         return this.statusItem();
+      case 'mainline':
+        return this.mainlineItem();
       case 'collisionsHeader':
         return this.collisionsHeaderItem();
       case 'collisionFile':
@@ -140,6 +145,11 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     if (status.state === 'degraded' || status.state === 'error') {
       nodes.push({ kind: 'status' });
     }
+    // Above the collisions on purpose. What has already landed is the more urgent of the
+    // two, and it is also the row that keeps this view from emptying out on a quiet day.
+    if (this.store.hasMainlineDrift()) {
+      nodes.push({ kind: 'mainline' });
+    }
     if (this.scanner.hotFiles().length > 0) {
       nodes.push({ kind: 'collisionsHeader' });
     }
@@ -183,6 +193,62 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     return item;
   }
 
+  /**
+   * The "main has moved under you" row.
+   *
+   * One row, always, whenever the mainline is ahead — even when none of it touches your
+   * work. That is the ambient half of drift tracking: knowing your branch is twelve commits
+   * behind is worth a line of screen space, and it is also the only thing GitRay has to say
+   * on a day with nothing open, which is exactly when it used to say nothing at all.
+   */
+  private mainlineItem(): vscode.TreeItem {
+    const mainline = this.store.mainline();
+    const commits = mainline?.commits ?? [];
+    const branch = mainline?.branch ?? 'main';
+    const behind = behindMainline(mainline);
+    const affected = this.scanner
+      .hotFiles()
+      .filter((analysis) => analysis.regions.some((r) => r.origin.kind === 'mainline')).length;
+
+    const item = new vscode.TreeItem(
+      `${branch} has moved under you`,
+      vscode.TreeItemCollapsibleState.None
+    );
+    const noun = behind.count === 1 && !behind.capped ? 'commit' : 'commits';
+    item.description = affected > 0
+      ? `${behind.display} ${noun} · ${affected} of your ${affected === 1 ? 'file' : 'files'}`
+      : `${behind.display} ${noun} ahead`;
+    item.iconPath = new vscode.ThemeIcon(
+      affected > 0 ? 'warning' : 'git-merge',
+      new vscode.ThemeColor(
+        affected > 0 ? 'gitray.collisionForeground' : 'gitray.mainlineForeground'
+      )
+    );
+
+    const lines = [
+      `**Your branch left \`${codeSpan(branch)}\` ${behind.capped ? 'more than ' : ''}${behind.count} ${noun} ago.**`,
+      '',
+      affected > 0
+        ? `${affected} of the files you have changed ${affected === 1 ? 'is' : 'are'} touched by what landed. Your next rebase will stop there.`
+        : 'None of it touches what you have changed.',
+      ''
+    ];
+    // Commit subjects and author names are free text from the repository, so they get the
+    // same escaping the hover card gives them rather than being trusted to be plain.
+    for (const commit of commits.slice(0, 8)) {
+      lines.push(
+        `- \`${commit.sha}\` ${escapeMarkdown(commit.subject)} — ${escapeMarkdown(commit.author)}`
+      );
+    }
+    if (commits.length > 8) lines.push(`- … ${commits.length - 8} more`);
+
+    const tooltip = new vscode.MarkdownString(lines.join('\n'));
+    tooltip.isTrusted = false;
+    item.tooltip = tooltip;
+    item.contextValue = 'gitray.mainline';
+    return item;
+  }
+
   private collisionsHeaderItem(): vscode.TreeItem {
     const files = this.scanner.hotFiles();
     const collisions = this.scanner.collisionCount();
@@ -197,7 +263,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
       new vscode.ThemeColor(collisions > 0 ? 'gitray.collisionForeground' : 'gitray.nearMissForeground')
     );
     item.tooltip = new vscode.MarkdownString(
-      'Files where your work and a collaborator\'s overlap.\n\nComputed against the merge base, the same way git decides whether a merge conflicts.'
+      'Files where your work overlaps someone else\'s — an open pull request, or something that already merged.\n\nComputed against the shared ancestor, the same way git decides whether a merge conflicts.'
     );
     item.contextValue = 'gitray.collisions';
     return item;
@@ -217,11 +283,14 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
   }
 
   private collisionRegionItem(analysis: FileAnalysis, region: ResolvedRegion): vscode.TreeItem {
-    const pr = this.store.pullRequest(region.prNumber);
+    const prNumber = prNumberOf(region.origin);
+    const pr = prNumber === undefined ? undefined : this.store.pullRequest(prNumber);
     const line = region.range.start + 1;
 
     const item = new vscode.TreeItem(
-      `${region.author} · #${region.prNumber}`,
+      region.origin.kind === 'mainline'
+        ? `${region.author} · merged`
+        : `${region.author} · #${prNumber}`,
       vscode.TreeItemCollapsibleState.None
     );
     item.description =
@@ -230,10 +299,10 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
         : `line ${line} · ${region.distance} away`;
     item.iconPath = new vscode.ThemeIcon(
       region.severity === 'collision' ? 'circle-filled' : 'circle-outline',
-      new vscode.ThemeColor(hueColorId(this.store.hueFor(region.author)))
+      new vscode.ThemeColor(hueColorId(this.store.hueForRegion(region)))
     );
     item.tooltip = new vscode.MarkdownString(
-      `**${pr?.title ?? `#${region.prNumber}`}**\n\n${analysis.path}:${line}`
+      `**${regionHeadline(region, pr)}**\n\n${analysis.path}:${line}`
     );
     item.command = {
       command: 'gitray.revealRegion',
