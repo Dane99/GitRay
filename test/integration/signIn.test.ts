@@ -28,6 +28,7 @@ let stub: VscodeStub;
 let Store: typeof import('../../src/model/store.js').Store;
 let SyncEngine: typeof import('../../src/sync/engine.js').SyncEngine;
 let GitHub: typeof import('../../src/providers/github.js').GitHub;
+let RemoteSelector: typeof import('../../src/providers/remoteSelection.js').RemoteSelector;
 let editorTokenSource: typeof import('../../src/providers/session.js').editorTokenSource;
 let signIn: typeof import('../../src/providers/session.js').signIn;
 let readConfig: typeof import('../../src/core/config.js').readConfig;
@@ -44,6 +45,7 @@ before(async () => {
   ({ Store } = await import('../../src/model/store.js'));
   ({ SyncEngine } = await import('../../src/sync/engine.js'));
   ({ GitHub } = await import('../../src/providers/github.js'));
+  ({ RemoteSelector } = await import('../../src/providers/remoteSelection.js'));
   ({ editorTokenSource, signIn } = await import('../../src/providers/session.js'));
   ({ readConfig } = await import('../../src/core/config.js'));
 });
@@ -55,12 +57,22 @@ after(() => {
 beforeEach(() => {
   stub.sessionRequests.length = 0;
   stub.githubSession = undefined;
+  probed = [];
 });
 
-/** A GitHub that answers a probe and a list, and records nothing else. */
+/** Which repository each probe asked about, so a settled transport can be shown to re-probe. */
+let probed: string[] = [];
+
+/** A GitHub that answers a probe and a list, and records which repository was asked. */
 function stubEndpoint(): void {
   globalThis.fetch = (async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(String(init.body)) as { query: string };
+    const body = JSON.parse(String(init.body)) as {
+      query: string;
+      variables?: { owner?: string; name?: string };
+    };
+    if (body.query.includes('GitRayProbe')) {
+      probed.push(`${body.variables?.owner}/${body.variables?.name}`);
+    }
     const data = body.query.includes('GitRayProbe')
       ? { viewer: { login: 'dane' }, repository: { nameWithOwner: 'Dane99/GitRay' } }
       : {
@@ -102,24 +114,33 @@ const noCli = {
 /**
  * Just enough repository for a sync pass.
  *
- * The git side is stubbed to bow out early — no remote to fetch from, a shallow clone — so
- * that what remains under test is the metadata call and nothing else.
+ * The git side is stubbed to bow out early — a shallow clone — so that what remains under
+ * test is the metadata call and nothing else. One selector, shared between the engine and
+ * the GitHub client exactly as `Repository` shares it, because a test with two of them could
+ * not catch the two disagreeing.
  */
-function harness() {
+function harness(
+  options: { remotes?: Record<string, string>; configured?: () => string } = {}
+) {
   const store = new Store();
-  const github = new GitHub(ROOT, { remoteUrl: async () => 'git@github.com:Dane99/GitRay.git' } as never, editorTokenSource(), noCli);
+  const urls = options.remotes ?? { origin: 'git@github.com:Dane99/GitRay.git' };
+  const git = {
+    headSha: async () => 'head1',
+    remotes: async () => Object.keys(urls),
+    remoteUrl: async (name: string) => urls[name],
+    defaultBranch: async () => undefined,
+    isShallow: async () => true,
+    deleteRefs: async () => {}
+  };
+  const remotes = new RemoteSelector(git as never, options.configured ?? (() => ''));
+  const github = new GitHub(ROOT, git as never, editorTokenSource(), noCli, remotes);
 
   const repository = {
     root: ROOT,
     folder: { uri: (stub.api.Uri as { file(p: string): unknown }).file(ROOT), name: 'repo', index: 0 },
-    git: {
-      headSha: async () => 'head1',
-      hasRemote: async () => false,
-      defaultBranch: async () => undefined,
-      isShallow: async () => true,
-      deleteRefs: async () => {}
-    },
-    github
+    git,
+    github,
+    remotes
   } as never;
 
   const engine = new SyncEngine(repository, store, { reset: () => {} } as never);
@@ -192,6 +213,33 @@ test('a dismissed sign-in is an answer, not a failure', async () => {
 
   assert.equal(await signIn(), false);
   assert.deepEqual(stub.sessionRequests.map((request) => request.interactive), [true]);
+});
+
+test('repointing the remote re-probes instead of listing the old repository', async () => {
+  // The probe normally runs once a session, which was safe when the repository came from a
+  // parsed `origin`. `gitray.remote` is live: the ref fetch follows it on the very next pass,
+  // so a probe left alone would leave pull requests listed from one repository and their
+  // heads fetched from another — the split this whole change exists to close.
+  stubEndpoint();
+  stub.githubSession = { accessToken: 'token-value', account: { label: 'dane' } };
+
+  let configured = 'origin';
+  const { sync } = harness({
+    remotes: {
+      origin: 'git@github.com:dane/GitRay.git',
+      upstream: 'git@github.com:Dane99/GitRay.git'
+    },
+    configured: () => configured
+  });
+
+  await sync();
+  await sync();
+  assert.deepEqual(probed, ['dane/GitRay'], 'a settled transport must not re-probe for nothing');
+
+  configured = 'upstream';
+  await sync();
+
+  assert.deepEqual(probed, ['dane/GitRay', 'Dane99/GitRay']);
 });
 
 test('a poll after signing in picks the session up without a reload', async () => {

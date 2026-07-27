@@ -25,7 +25,7 @@ let GitHub: typeof GitHubClass;
 const realFetch = globalThis.fetch;
 
 /** Requests the stubbed endpoint received, so "one request per poll" stays testable. */
-let requests: { authorization: string; query: string }[] = [];
+let requests: { authorization: string; query: string; owner?: string; name?: string }[] = [];
 
 before(async () => {
   stub = makeVscodeStub(process.cwd());
@@ -51,8 +51,17 @@ beforeEach(() => {
 function stubEndpoint(): void {
   globalThis.fetch = (async (_url: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;
-    const body = JSON.parse(String(init.body)) as { query: string };
-    requests.push({ authorization: headers.authorization, query: body.query });
+    const body = JSON.parse(String(init.body)) as {
+      query: string;
+      variables?: { owner?: string; name?: string };
+    };
+    requests.push({
+      authorization: headers.authorization,
+      query: body.query,
+      // Which repository was asked about, as opposed to what the stub chooses to answer.
+      owner: body.variables?.owner,
+      name: body.variables?.name
+    });
 
     const data = body.query.includes('GitRayProbe')
       ? { viewer: { login: 'dane' }, repository: { nameWithOwner: 'Dane99/GitRay' } }
@@ -97,8 +106,12 @@ function fakeCli(state: GhState) {
   } as never;
 }
 
-function fakeGit(remoteUrl: string | undefined) {
-  return { remoteUrl: async () => remoteUrl } as never;
+/** A repository with one remote, whatever it is named, pointing wherever the test says. */
+function fakeGit(remoteUrl: string | undefined, name = 'origin') {
+  return {
+    remotes: async () => (remoteUrl ? [name] : []),
+    remoteUrl: async () => remoteUrl
+  } as never;
 }
 
 const signedIn = { getToken: async () => 'token-value' };
@@ -252,6 +265,65 @@ test('checkout asked about before the first sync probes gh rather than guessing'
   const github = new GitHub('/repo', fakeGit(ORIGIN), signedIn, fakeCli({ kind: 'missing' }));
 
   assert.equal(await github.canCheckout(), false, 'no transport has settled yet');
+});
+
+test('a typo in gitray.remote is reported as itself, not as "no GitHub repository"', async () => {
+  // Without gh, sync degrades at the probe and never reaches the ref fetch that would
+  // otherwise have named the setting. Saying "no GitHub repository" here sends whoever wrote
+  // it looking at their remotes instead of at the line they just typed.
+  stubEndpoint();
+  const { RemoteSelector } = await import('../../src/providers/remoteSelection.js');
+  const git = fakeGit(ORIGIN);
+  const github = new GitHub(
+    '/repo',
+    git,
+    signedIn,
+    fakeCli({ kind: 'missing' }),
+    new RemoteSelector(git, () => 'upstrem')
+  );
+
+  const state = await github.probe();
+
+  assert.equal(state.kind, 'no-repo');
+  assert.match(state.kind === 'no-repo' ? state.message : '', /gitray\.remote/);
+  assert.match(state.kind === 'no-repo' ? state.message : '', /upstrem/);
+  assert.equal(requests.length, 0, 'nothing should reach the network with no remote settled');
+});
+
+test('repointing gitray.remote moves the metadata too, without a reload', async () => {
+  // The split this guards: the sync engine picks the settings change up immediately and
+  // starts fetching refs from the new remote, so a repository cached from the old one would
+  // leave pull requests listed from one repository and their heads fetched from another.
+  stubEndpoint();
+  const { RemoteSelector } = await import('../../src/providers/remoteSelection.js');
+  const git = {
+    remotes: async () => ['origin', 'upstream'],
+    remoteUrl: async (name: string) =>
+      name === 'origin' ? 'git@github.com:dane/GitRay.git' : ORIGIN
+  } as never;
+
+  let configured = 'origin';
+  const github = new GitHub(
+    '/repo',
+    git,
+    signedIn,
+    fakeCli({ kind: 'missing' }),
+    new RemoteSelector(git, () => configured)
+  );
+
+  assert.equal((await github.probe()).kind, 'ok');
+  assert.deepEqual([requests[0].owner, requests[0].name], ['dane', 'GitRay']);
+  assert.equal(github.pullRequestUrl(1), 'https://github.com/dane/GitRay/pull/1');
+
+  configured = 'upstream';
+  assert.equal((await github.probe()).kind, 'ok');
+
+  assert.deepEqual(
+    [requests[1].owner, requests[1].name],
+    ['Dane99', 'GitRay'],
+    'the probe must follow the remote rather than reuse the repository it cached'
+  );
+  assert.equal(github.pullRequestUrl(1), 'https://github.com/Dane99/GitRay/pull/1');
 });
 
 test('a pull request url can be derived without asking anyone', async () => {

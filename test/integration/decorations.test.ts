@@ -139,6 +139,7 @@ const config = {
   decorationMode: 'ambient' as const,
   showInlineAnnotations: true,
   fetchPullRequestRefs: true,
+  remote: '',
   trackMainlineDrift: true,
   mainlineBranch: '',
   mutedPullRequests: [],

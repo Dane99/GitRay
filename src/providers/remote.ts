@@ -3,7 +3,8 @@
  *
  * The `gh` CLI works this out for itself, so GitRay never had to. The editor's GitHub
  * session does not: it hands over a token and nothing else, which leaves the question of
- * *whose* pull requests to ask for. That answer is already sitting in `origin`.
+ * *whose* pull requests to ask for. That answer is sitting in a remote URL — which remote
+ * is remoteSelection.ts's problem, not this module's.
  *
  * Parsing is deliberately narrow. A URL that does not resolve to a plain `owner/name` on a
  * recognisable host returns undefined, and the caller falls back to saying so — guessing

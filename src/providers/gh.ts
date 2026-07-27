@@ -17,9 +17,11 @@ import {
   toPullRequests,
   type RawPullRequest
 } from './pullRequestFields.js';
+import { parseRemoteUrl } from './remote.js';
 
 export type GhState =
-  | { kind: 'ok'; login: string; nameWithOwner: string }
+  /** `host` is undefined only when gh reported a url nothing could be parsed out of. */
+  | { kind: 'ok'; login: string; nameWithOwner: string; host?: string }
   | { kind: 'missing' }
   | { kind: 'unauthenticated' }
   | { kind: 'offline'; message: string }
@@ -53,13 +55,20 @@ export class Gh {
     }
 
     try {
-      const nameWithOwner = (
-        await this.gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'])
-      ).trim();
+      // `url` comes back in the same request and is the only way to learn which *host* gh
+      // resolved: `owner/name` alone cannot tell github.com from an Enterprise mirror of it.
+      const raw = await this.gh(['repo', 'view', '--json', 'nameWithOwner,url']);
+      const view = JSON.parse(raw) as { nameWithOwner?: string; url?: string };
+      const nameWithOwner = view.nameWithOwner?.trim();
       if (!nameWithOwner) {
         return { kind: 'no-repo', message: 'No GitHub repository is associated with this folder.' };
       }
-      return { kind: 'ok', login, nameWithOwner };
+      return {
+        kind: 'ok',
+        login,
+        nameWithOwner,
+        host: view.url ? parseRemoteUrl(view.url)?.host : undefined
+      };
     } catch (error) {
       const message =
         error instanceof CommandError

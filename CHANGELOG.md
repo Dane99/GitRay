@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.9
+
+- **The fork workflow works.** `origin` was hardcoded everywhere a remote was needed, which
+  is the wrong remote for the setup GitRay is most useful in: fork a repository and `origin`
+  is *your* copy, while the pull requests and the mainline live on `upstream`. Neither half
+  failed out loud. `refs/pull/*` does not exist on a fork, so head fetches found nothing and
+  line-level indicators never appeared; a fork's default branch is frozen wherever its last
+  sync left it, so drift measured as zero. `gh` resolved the base repository correctly the
+  whole time, which made the extension half-work — harder to notice than an outright failure.
+  - GitRay now works the remote out instead of assuming one. `gitray.remote` decides when it
+    is set; otherwise the remote pointing at whatever repository `gh` resolved, since gh
+    already does fork base-repo resolution including `gh repo set-default`; otherwise the
+    name preference gh itself falls back to — `upstream`, then `github`, then `origin`.
+  - `gitray.remote` is honoured even when it names a remote that does not exist. The sidebar
+    says which name was not found rather than quietly falling back to one that answers,
+    because on a plain clone that fallback is indistinguishable from a working setup.
+  - The editor's GitHub session now asks about the same repository the refs are fetched from.
+    Previously it parsed `origin` while gh resolved the base repo, so the two transports
+    could describe different repositories on the same machine.
+  - A failed head fetch names the remote it tried and points at `gitray.remote`, which is
+    what the fork case looks like from the outside. Without `gh` the same typo is reported
+    at the probe instead, and it names the setting there too rather than reporting itself as
+    "no GitHub repository" and sending the reader to look at their remotes.
+  - Both fixes work without a reload. Repointing `gitray.remote` re-probes, so the metadata
+    follows the refs instead of listing pull requests from the repository it settled on at
+    startup; and the remote list is re-read every pass, so `git remote add upstream …` — the
+    fix the failure message asks for — takes effect on the next refresh.
+  - The host is compared alongside `owner/name` when matching a remote to what `gh`
+    resolved, so an Enterprise repository is not satisfied by a public mirror of the same
+    name. `gh repo view` reports it in the request GitRay was already making.
+  - Nothing in the git layer defaults to `origin` any more — every remote is passed in, so
+    the assumption cannot quietly return. `scripts/demo-collision.ts` resolves it the same
+    way the extension does.
+
 ## 0.1.8
 
 - **The GitHub CLI is no longer required.** It was the largest thing standing between

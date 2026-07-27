@@ -22,6 +22,7 @@ import { join } from 'node:path';
 
 import { Git, prRef } from '../src/providers/git.js';
 import { Gh } from '../src/providers/gh.js';
+import { RemoteSelector } from '../src/providers/remoteSelection.js';
 import { alignLines, splitLines } from '../src/model/lineMap.js';
 
 async function main(): Promise<number> {
@@ -49,6 +50,17 @@ async function main(): Promise<number> {
   }
   console.log(`${state.nameWithOwner} as ${state.login}`);
 
+  // The same resolution the extension does, for the same reason: in a fork the pull requests
+  // are on `upstream` and fetching them from `origin` silently gets nothing.
+  const remotes = new RemoteSelector(git, () => '');
+  remotes.setBaseRepository({ nameWithOwner: state.nameWithOwner, host: state.host });
+  const remote = await remotes.name();
+  if (!remote) {
+    console.error('this repository has no remote to fetch from');
+    return 1;
+  }
+  console.log(`fetching from ${remote}`);
+
   const pullRequests = await gh.listPullRequests(30, false);
   console.log(`${pullRequests.length} open pull requests`);
 
@@ -60,7 +72,7 @@ async function main(): Promise<number> {
   }
   if (missing.length > 0) {
     console.log(`fetching ${missing.length} pull request head(s)...`);
-    await git.fetchPullRequests(missing);
+    await git.fetchPullRequests(missing, remote);
   }
 
   for (const pr of pullRequests) {

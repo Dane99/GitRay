@@ -9,9 +9,13 @@
  *
  * The fallback is deliberately narrower than the CLI. It speaks only to github.com, because
  * that is the only host the editor's built-in provider issues tokens for, and it works out
- * which repository to ask about from `origin` rather than from gh's base-repo resolution.
- * Where gh has a real answer — including "there is no GitHub repository here" — that answer
- * wins, because it is better informed than anything this module can derive.
+ * which repository to ask about by parsing a remote URL rather than from gh's base-repo
+ * resolution. Where gh has a real answer — including "there is no GitHub repository here" —
+ * that answer wins, because it is better informed than anything this module can derive.
+ *
+ * Which remote gets parsed is not this module's decision either; see remoteSelection.ts.
+ * Both transports feed that one selector, so the repository whose pull requests are listed
+ * and the remote their refs are fetched from cannot drift apart.
  */
 
 import { log } from '../core/log.js';
@@ -19,7 +23,13 @@ import type { PullRequest } from '../core/types.js';
 import { Gh } from './gh.js';
 import type { Git } from './git.js';
 import { GitHubApi, GitHubApiError, type TokenSource } from './githubApi.js';
-import { isGitHubDotCom, parseRemoteUrl, type RemoteRepository } from './remote.js';
+import { isGitHubDotCom, type RemoteRepository } from './remote.js';
+import {
+  describeUnusableRemote,
+  RemoteSelector,
+  sameRepository,
+  type BaseRepository
+} from './remoteSelection.js';
 
 export type Transport = 'cli' | 'api';
 
@@ -37,14 +47,21 @@ export class GitHub {
   private transport: Transport | undefined;
   private api: GitHubApi | undefined;
   private remote: RemoteRepository | undefined;
+  /** Which remote `remote` was read from, so a re-selection is noticed. */
+  private remoteName: string | undefined;
   private remoteRead = false;
 
   constructor(
     root: string,
-    private readonly git: Git,
+    git: Git,
     private readonly tokens: TokenSource,
     /** Injectable so the transport choice can be exercised on a machine that has gh. */
-    private readonly cli: Gh = new Gh(root)
+    private readonly cli: Gh = new Gh(root),
+    /**
+     * Shared with the sync engine when there is one. The default exists for tests and for
+     * anyone constructing a GitHub on its own; it resolves the same way, just privately.
+     */
+    private readonly remotes: RemoteSelector = new RemoteSelector(git, () => '')
   ) {}
 
   /** Which transport the last successful probe settled on, for the log and the UI. */
@@ -69,14 +86,26 @@ export class GitHub {
    *
    * Everything else gh reports is returned as final. An offline gh means the network is
    * down for the API too, and a gh that resolved the folder to no GitHub repository knows
-   * more about the remotes here than a parsed `origin` URL does.
+   * more about the remotes here than a parsed remote URL does.
    */
   private async probeCli(): Promise<GitHubState | undefined> {
     const state = await this.cli.probe();
     switch (state.kind) {
-      case 'ok':
+      case 'ok': {
         this.transport = 'cli';
-        return { ...state, transport: 'cli' };
+        // gh's base-repo resolution is the best answer anyone here has to "where do this
+        // folder's pull requests live", and the refs have to be fetched from the same
+        // place. Handing it over is what makes a fork work.
+        const base = { nameWithOwner: state.nameWithOwner, host: state.host };
+        this.remotes.setBaseRepository(base);
+        await this.adoptRemote(base);
+        return {
+          kind: 'ok',
+          login: state.login,
+          nameWithOwner: state.nameWithOwner,
+          transport: 'cli'
+        };
+      }
       case 'offline':
         return { kind: 'offline', message: state.message };
       case 'no-repo':
@@ -88,11 +117,20 @@ export class GitHub {
   }
 
   private async probeApi(): Promise<GitHubState> {
+    // Asked first so that "the remote you named does not exist" reaches the user as itself.
+    // Without gh, sync degrades here and never reaches the ref fetch that would otherwise
+    // have said it — and a typo that reports as "no GitHub repository" sends whoever wrote
+    // the setting looking in the wrong place entirely.
+    const choice = await this.remotes.choose();
+    if (choice.kind !== 'ok') {
+      return { kind: 'no-repo', message: describeUnusableRemote(choice) };
+    }
+
     const remote = await this.resolveRemote();
     if (!remote) {
       return {
         kind: 'no-repo',
-        message: 'This folder has no `origin` remote pointing at a GitHub repository.'
+        message: `The \`${choice.name}\` remote does not point at a GitHub repository.`
       };
     }
 
@@ -173,19 +211,52 @@ export class GitHub {
     return new GitHubApi(remote, this.tokens);
   }
 
-  /** Read `origin` once. It cannot change without a reload that rebuilds this object. */
+  /**
+   * The repository the selected remote points at.
+   *
+   * Keyed on the selected remote rather than read once and kept forever. `gitray.remote` is
+   * a live setting: repoint it mid-session and the sync engine starts fetching refs from
+   * somewhere new, so a repository cached from the old one would leave this transport
+   * listing pull requests from a repository the refs no longer come from. The engine
+   * re-probes on the same signal, which is what rebuilds the API client underneath.
+   */
   private async resolveRemote(): Promise<RemoteRepository | undefined> {
-    if (this.remoteRead) return this.remote;
+    const name = await this.remotes.name();
+    if (this.remoteRead && name === this.remoteName) return this.remote;
     this.remoteRead = true;
+    this.remoteName = name;
 
-    const url = await this.git.remoteUrl();
-    this.remote = url ? parseRemoteUrl(url) : undefined;
+    this.remote = await this.remotes.repository();
     if (this.remote) {
-      log.debug(`origin resolves to ${this.remote.nameWithOwner} on ${this.remote.host}`);
-    } else if (url) {
-      log.debug('origin does not look like a GitHub repository');
+      log.debug(`remote resolves to ${this.remote.nameWithOwner} on ${this.remote.host}`);
+    } else {
+      log.debug('no remote here looks like a GitHub repository');
     }
     return this.remote;
+  }
+
+  /**
+   * Adopt the selected remote as the source of pull request URLs, but only if it agrees
+   * with gh.
+   *
+   * A disagreement means gh resolved something no remote points at — a `gh repo set-default`
+   * elsewhere, or a fork whose parent was never added. Deriving a URL from the remote then
+   * would produce a link into the wrong repository, which is a worse answer than no link:
+   * callers already handle undefined by asking gh to open the pull request instead.
+   *
+   * It is also the one configuration where the fetch is about to go somewhere that has none
+   * of the refs, with nothing local to correct it, so it is worth a line in the log before
+   * the failure rather than after.
+   */
+  private async adoptRemote(base: BaseRepository): Promise<void> {
+    const remote = await this.resolveRemote();
+    if (remote && !sameRepository(remote, base)) {
+      this.remote = undefined;
+      log.warn(
+        `the GitHub CLI resolved ${base.nameWithOwner}, but no remote here points at it — ` +
+          `refs will be fetched from ${remote.nameWithOwner}. Set \`gitray.remote\` if that is wrong.`
+      );
+    }
   }
 }
 

@@ -36,7 +36,7 @@ For each open pull request `P` and file `F`:
 
 ### What counts as "your work"
 
-Step 3 measures against the mainline (`origin/<base branch>`), not against the pull
+Step 3 measures against the mainline (`<remote>/<base branch>`), not against the pull
 request's merge base, and the distinction matters more than it looks.
 
 Main keeps moving after a pull request branches off. Diff a file against that pull
@@ -205,20 +205,42 @@ token is held for the duration of that request and never stored, and GitRay only
 
 Two things still need `gh`: GitHub Enterprise hosts, because VS Code's built-in provider
 signs in to github.com only, and *Check Out Pull Request Branch*, because checking out a
-fork head needs a ref that does not exist on `origin`.
+fork head needs a ref that does not exist on your own remote.
 
 GitRay degrades rather than disappearing. Without credentials, a GitHub remote, or full
 history it falls back to file-level indicators and states the reason in the sidebar instead
 of throwing a notification at you every minute.
+
+### Which remote GitRay uses
+
+`origin` is not assumed. In the usual open-source setup `origin` is *your fork* and the
+pull requests live on `upstream` — fetch `refs/pull/*` from the fork and you get nothing,
+and compare against the fork's `main` and you find no drift. So GitRay works the remote out,
+in this order:
+
+1. `gitray.remote`, if you set it. Set it to a remote that does not exist and the sidebar
+   says so, rather than quietly falling back to something that answers.
+2. The remote pointing at whatever repository `gh` resolved. `gh` already does fork
+   base-repo resolution, including `gh repo set-default`, so when it is available its
+   answer decides.
+3. Otherwise the same name preference `gh` uses: `upstream`, then `github`, then `origin`.
+
+The chosen remote is named in the log (*GitRay: Show Log*) and in the sidebar whenever a
+fetch from it fails, which is what a wrong guess looks like. Both fixes take effect on the
+next refresh — changing `gitray.remote` and running `git remote add upstream …` are each
+noticed without reloading the window.
 
 ## What it does to your repository
 
 GitRay fetches open pull request heads, and the mainline, so it can diff them locally:
 
 ```
-git fetch --no-tags origin +refs/pull/142/head:refs/gitray/pr/142 ...
-git fetch --no-tags origin +refs/heads/main:refs/gitray/mainline/main
+git fetch --no-tags <remote> +refs/pull/142/head:refs/gitray/pr/142 ...
+git fetch --no-tags <remote> +refs/heads/main:refs/gitray/mainline/main
 ```
+
+`<remote>` is whichever remote hosts the pull requests — see
+[Which remote GitRay uses](#which-remote-gitray-uses).
 
 To be explicit, because it is the reasonable worry:
 
@@ -234,7 +256,7 @@ To be explicit, because it is the reasonable worry:
   the one mainline.
 - **Isolated namespace.** Everything lands under `refs/gitray/*`: invisible to
   `git branch`, pruned when a pull request closes. In particular the mainline copy is
-  *not* `refs/remotes/origin/main` — advancing that would change what `git status` and
+  *not* `refs/remotes/<remote>/main` — advancing that would change what `git status` and
   every other tool reports, which is your call to make and not an extension's side effect.
 - **Fork pull requests work**, since GitHub publishes fork heads under the base repo's
   `refs/pull/*`.
@@ -276,6 +298,7 @@ minutes if the remote is unreachable.
 | `gitray.includeOwnPullRequests` | `true` | Include pull requests you authored. Turn off to see only other people's work. |
 | `gitray.maxPullRequests` | `30` | How many open pull requests to track, most recently updated first. Capped at 100 — one request's worth, which is what keeps a refresh costing one request. |
 | `gitray.fetchPullRequestRefs` | `true` | Fetch pull request heads into `refs/gitray/*` so indicators can be line-level. Never merges, rebases, or checks anything out. |
+| `gitray.remote` | `""` | Remote to fetch pull request heads and the mainline from. Empty means detect it — see [Which remote GitRay uses](#which-remote-gitray-uses). |
 | `gitray.mainline.trackDrift` | `true` | Flag work that already merged into the mainline and touches your lines. See [When the pull request has already merged](#when-the-pull-request-has-already-merged). |
 | `gitray.mainline.branch` | `""` | Branch to treat as the mainline. Empty means the remote's default branch, falling back to whatever your open pull requests target. |
 | `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. Usually written for you by the mute commands and reviewable in the sidebar's [Muted](#muting) section. Applies to open pull requests only — muting does not suppress mainline drift, since your next rebase does not care who you muted. |
@@ -333,6 +356,9 @@ network and no open pull requests. A sample lives in [`fixtures/sample.json`](fi
   predictions against what `git merge` actually does.
 - `test/integration/upstreamDrift.test.ts` — pins down the "your work" definition above, so
   a clean checkout can never start reporting phantom collisions again.
+- `test/integration/forkRemote.test.ts` — builds a real fork clone, with the pull requests
+  on `upstream` and a stale `origin`, and asserts which remote each fetch reaches. Both
+  failures it guards are silent ones.
 - `test/integration/activation.test.ts` — activates the real bundle against a stubbed
   VS Code API. This one found a live feedback loop between the scanner and the store during
   development; it is worth keeping.

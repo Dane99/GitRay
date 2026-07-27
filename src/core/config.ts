@@ -16,6 +16,8 @@ export interface Config {
   decorationMode: DecorationMode;
   showInlineAnnotations: boolean;
   fetchPullRequestRefs: boolean;
+  /** Empty means "detect it". See remoteSelection.ts for what detection does. */
+  remote: string;
   trackMainlineDrift: boolean;
   /** Empty means "detect it", which is what almost everyone should leave it as. */
   mainlineBranch: string;
@@ -43,6 +45,7 @@ export function readConfig(scope?: vscode.Uri): Config {
     decorationMode: raw.get<DecorationMode>('decorations.mode', 'ambient'),
     showInlineAnnotations: raw.get<boolean>('decorations.showInlineAnnotations', true),
     fetchPullRequestRefs: raw.get<boolean>('fetchPullRequestRefs', true),
+    remote: raw.get<string>('remote', '').trim(),
     trackMainlineDrift: raw.get<boolean>('mainline.trackDrift', true),
     mainlineBranch: raw.get<string>('mainline.branch', '').trim(),
     mutedPullRequests: raw.get<number[]>('mutedPullRequests', []),
