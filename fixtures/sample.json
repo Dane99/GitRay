@@ -1,0 +1,58 @@
+{
+  "_comment": "Sample fixture for GitRay's offline replay mode. Load it with the 'GitRay: Developer: Load Offline Fixture' command to exercise the tree, explorer badges, status bar, and radar without a network connection or any open pull requests. Paths do not need to exist in your workspace, though badges only appear for ones that do.",
+  "pullRequests": [
+    {
+      "number": 142,
+      "title": "Tighten the auth guard against null sessions",
+      "author": "ada",
+      "headRefName": "feat/auth-guard",
+      "files": [
+        { "path": "src/auth/guard.ts", "additions": 48, "deletions": 12 },
+        { "path": "src/auth/session.ts", "additions": 16, "deletions": 3 },
+        { "path": "test/auth/guard.test.ts", "additions": 91, "deletions": 0 }
+      ]
+    },
+    {
+      "number": 151,
+      "title": "Extract the session store behind an interface",
+      "author": "grace",
+      "headRefName": "refactor/session-store",
+      "files": [
+        { "path": "src/auth/session.ts", "additions": 74, "deletions": 51 },
+        { "path": "src/storage/redis.ts", "additions": 33, "deletions": 8 },
+        { "path": "src/index.ts", "additions": 4, "deletions": 2 }
+      ]
+    },
+    {
+      "number": 155,
+      "title": "Add retry with backoff to the upload queue",
+      "author": "alan",
+      "headRefName": "fix/upload-retry",
+      "files": [
+        { "path": "src/queue/upload.ts", "additions": 120, "deletions": 34 },
+        { "path": "src/queue/backoff.ts", "additions": 61, "deletions": 0 }
+      ]
+    },
+    {
+      "number": 158,
+      "title": "Bump the parser and regenerate the grammar",
+      "author": "edsger",
+      "isDraft": true,
+      "headRefName": "chore/parser-bump",
+      "files": [
+        { "path": "src/parser/grammar.ts", "additions": 812, "deletions": 640 },
+        { "path": "src/index.ts", "additions": 2, "deletions": 2 }
+      ]
+    },
+    {
+      "number": 163,
+      "title": "Document the storage adapters",
+      "author": "barbara",
+      "headRefName": "docs/storage",
+      "files": [
+        { "path": "docs/storage.md", "additions": 210, "deletions": 4 },
+        { "path": "src/storage/redis.ts", "additions": 6, "deletions": 6 }
+      ]
+    }
+  ]
+}

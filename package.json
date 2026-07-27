@@ -1,0 +1,476 @@
+{
+  "name": "gitray",
+  "displayName": "GitRay",
+  "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
+  "version": "0.1.0",
+  "publisher": "gitray",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "github",
+    "pull request",
+    "merge conflict",
+    "collaboration"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gitray",
+          "title": "GitRay",
+          "icon": "media/gitray.svg"
+        }
+      ]
+    },
+    "views": {
+      "gitray": [
+        {
+          "id": "gitray.pulse",
+          "name": "Pulse",
+          "icon": "media/gitray.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "gitray.pulse",
+        "contents": "GitRay is starting up.\n[Refresh](command:gitray.refresh)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "gitray.refresh",
+        "title": "Refresh",
+        "category": "GitRay",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gitray.toggleDecorations",
+        "title": "Toggle Editor Indicators",
+        "category": "GitRay",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "gitray.openRadar",
+        "title": "Open Radar",
+        "category": "GitRay",
+        "icon": "$(radio-tower)"
+      },
+      {
+        "command": "gitray.nextCollision",
+        "title": "Go to Next Collision",
+        "category": "GitRay"
+      },
+      {
+        "command": "gitray.previousCollision",
+        "title": "Go to Previous Collision",
+        "category": "GitRay"
+      },
+      {
+        "command": "gitray.openPullRequest",
+        "title": "Open Pull Request on GitHub",
+        "category": "GitRay",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "gitray.diffWithPullRequest",
+        "title": "Compare With Collaborator's Version",
+        "category": "GitRay",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "gitray.checkoutPullRequest",
+        "title": "Check Out Pull Request Branch",
+        "category": "GitRay",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "gitray.mutePullRequest",
+        "title": "Mute Pull Request",
+        "category": "GitRay",
+        "icon": "$(bell-slash)"
+      },
+      {
+        "command": "gitray.unmuteAll",
+        "title": "Unmute All Pull Requests",
+        "category": "GitRay"
+      },
+      {
+        "command": "gitray.revealRegion",
+        "title": "Reveal Change",
+        "category": "GitRay"
+      },
+      {
+        "command": "gitray.showOutput",
+        "title": "Show Log",
+        "category": "GitRay",
+        "icon": "$(output)"
+      },
+      {
+        "command": "gitray.removeRefs",
+        "title": "Remove Local GitRay Refs",
+        "category": "GitRay"
+      },
+      {
+        "command": "gitray.loadFixture",
+        "title": "Developer: Load Offline Fixture",
+        "category": "GitRay"
+      },
+      {
+        "command": "gitray.clearFixture",
+        "title": "Developer: Clear Offline Fixture",
+        "category": "GitRay"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "gitray.refresh",
+          "when": "view == gitray.pulse",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gitray.openRadar",
+          "when": "view == gitray.pulse",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gitray.toggleDecorations",
+          "when": "view == gitray.pulse",
+          "group": "navigation@3"
+        },
+        {
+          "command": "gitray.showOutput",
+          "when": "view == gitray.pulse",
+          "group": "1_gitray@1"
+        },
+        {
+          "command": "gitray.unmuteAll",
+          "when": "view == gitray.pulse",
+          "group": "1_gitray@2"
+        },
+        {
+          "command": "gitray.removeRefs",
+          "when": "view == gitray.pulse",
+          "group": "1_gitray@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "gitray.openPullRequest",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.pr/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitray.mutePullRequest",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.pr/",
+          "group": "inline@2"
+        },
+        {
+          "command": "gitray.checkoutPullRequest",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.pr/",
+          "group": "1_gitray@1"
+        },
+        {
+          "command": "gitray.diffWithPullRequest",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
+          "group": "inline@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "gitray.revealRegion",
+          "when": "false"
+        },
+        {
+          "command": "gitray.openPullRequest",
+          "when": "false"
+        },
+        {
+          "command": "gitray.diffWithPullRequest",
+          "when": "false"
+        },
+        {
+          "command": "gitray.checkoutPullRequest",
+          "when": "false"
+        },
+        {
+          "command": "gitray.mutePullRequest",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "GitRay",
+      "properties": {
+        "gitray.refreshInterval": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "markdownDescription": "Seconds between refreshes. Set to `0` to refresh only manually. Polling pauses while the window is unfocused."
+        },
+        "gitray.includeDrafts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include draft pull requests."
+        },
+        "gitray.includeOwnPullRequests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include pull requests authored by you."
+        },
+        "gitray.maxPullRequests": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Maximum number of open pull requests to track, most recently updated first."
+        },
+        "gitray.proximityLines": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "How many lines away a collaborator's change can be from yours and still be flagged as a near miss."
+        },
+        "gitray.decorations.mode": {
+          "type": "string",
+          "enum": [
+            "ambient",
+            "collisionsOnly",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Show every collaborator change, quietly, and escalate collisions.",
+            "Show only changes that overlap or nearly overlap your own edits.",
+            "No editor decorations. Other surfaces keep working."
+          ],
+          "default": "ambient",
+          "description": "How much to show in the editor."
+        },
+        "gitray.decorations.showInlineAnnotations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a dim end-of-line annotation on collisions and on the region under your cursor."
+        },
+        "gitray.fetchPullRequestRefs": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Fetch open pull request heads into the isolated `refs/gitray/*` namespace so line-level indicators can be computed locally. This never merges, rebases, or checks anything out. When disabled, GitRay falls back to file-level indicators only."
+        },
+        "gitray.mutedPullRequests": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "default": [],
+          "description": "Pull request numbers to hide."
+        },
+        "gitray.mutedAuthors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "GitHub logins to hide."
+        },
+        "gitray.ignoreGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/package-lock.json",
+            "**/pnpm-lock.yaml",
+            "**/yarn.lock",
+            "**/Cargo.lock",
+            "**/poetry.lock",
+            "**/go.sum",
+            "**/dist/**",
+            "**/build/**",
+            "**/out/**",
+            "**/*.min.js",
+            "**/*.map",
+            "**/*.snap"
+          ],
+          "description": "Files matching these globs are never indicated."
+        },
+        "gitray.maxRegionsPerFile": {
+          "type": "number",
+          "default": 400,
+          "minimum": 10,
+          "description": "Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator."
+        }
+      }
+    },
+    "colors": [
+      {
+        "id": "gitray.collaborator1",
+        "description": "Collaborator hue 1.",
+        "defaults": {
+          "dark": "#4aa8ff",
+          "light": "#0a66c2",
+          "highContrast": "#7cc4ff",
+          "highContrastLight": "#00459e"
+        }
+      },
+      {
+        "id": "gitray.collaborator2",
+        "description": "Collaborator hue 2.",
+        "defaults": {
+          "dark": "#4ad6b8",
+          "light": "#0e8a72",
+          "highContrast": "#7ce9d2",
+          "highContrastLight": "#00614f"
+        }
+      },
+      {
+        "id": "gitray.collaborator3",
+        "description": "Collaborator hue 3.",
+        "defaults": {
+          "dark": "#b98bff",
+          "light": "#7a3fd6",
+          "highContrast": "#d1b3ff",
+          "highContrastLight": "#5a1fb0"
+        }
+      },
+      {
+        "id": "gitray.collaborator4",
+        "description": "Collaborator hue 4.",
+        "defaults": {
+          "dark": "#ffb454",
+          "light": "#a35c00",
+          "highContrast": "#ffcb85",
+          "highContrastLight": "#7a4200"
+        }
+      },
+      {
+        "id": "gitray.collaborator5",
+        "description": "Collaborator hue 5.",
+        "defaults": {
+          "dark": "#ff85b5",
+          "light": "#bf2f68",
+          "highContrast": "#ffadcd",
+          "highContrastLight": "#94154a"
+        }
+      },
+      {
+        "id": "gitray.collaborator6",
+        "description": "Collaborator hue 6.",
+        "defaults": {
+          "dark": "#8fd14f",
+          "light": "#4f7d1e",
+          "highContrast": "#b3e37f",
+          "highContrastLight": "#375c10"
+        }
+      },
+      {
+        "id": "gitray.collaborator7",
+        "description": "Collaborator hue 7.",
+        "defaults": {
+          "dark": "#5fd0e8",
+          "light": "#0d7b96",
+          "highContrast": "#93e2f2",
+          "highContrastLight": "#005a70"
+        }
+      },
+      {
+        "id": "gitray.collaborator8",
+        "description": "Collaborator hue 8.",
+        "defaults": {
+          "dark": "#f5866b",
+          "light": "#c2400f",
+          "highContrast": "#ffab96",
+          "highContrastLight": "#96300a"
+        }
+      },
+      {
+        "id": "gitray.collisionBackground",
+        "description": "Background tint for lines where a collaborator's change overlaps yours.",
+        "defaults": {
+          "dark": "#ff8c0022",
+          "light": "#ff8c001f",
+          "highContrast": "#ff8c0033",
+          "highContrastLight": "#ff8c0033"
+        }
+      },
+      {
+        "id": "gitray.collisionForeground",
+        "description": "Accent for collision markers and annotations.",
+        "defaults": {
+          "dark": "#ffa657",
+          "light": "#b5540b",
+          "highContrast": "#ffc48a",
+          "highContrastLight": "#8a3f06"
+        }
+      },
+      {
+        "id": "gitray.nearMissForeground",
+        "description": "Accent for changes that sit just outside your own edits.",
+        "defaults": {
+          "dark": "#d0a85c",
+          "light": "#8a6a1f",
+          "highContrast": "#e6c68a",
+          "highContrastLight": "#6b5010"
+        }
+      },
+      {
+        "id": "gitray.annotationForeground",
+        "description": "Inline end-of-line annotation text.",
+        "defaults": {
+          "dark": "#8b8b8b",
+          "light": "#8b8b8b",
+          "highContrast": "#a8a8a8",
+          "highContrastLight": "#6b6b6b"
+        }
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "gitray.nextCollision",
+        "key": "alt+f8",
+        "when": "editorTextFocus && gitray.hasCollisions"
+      },
+      {
+        "command": "gitray.previousCollision",
+        "key": "shift+alt+f8",
+        "when": "editorTextFocus && gitray.hasCollisions"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run check && npm run bundle -- --minify",
+    "bundle": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "compile": "tsc --noEmit",
+    "lint": "eslint src test --ext .ts",
+    "test": "node scripts/test.mjs",
+    "check": "npm run compile && npm run lint && npm run test"
+  },
+  "dependencies": {
+    "diff": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.2.1",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.57.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  }
+}

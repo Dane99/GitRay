@@ -1,0 +1,13 @@
+<!--
+  Activity bar icon.
+
+  A gutter ray with signal arcs radiating from it: the mark GitRay draws in the editor,
+  broadcasting. Drawn with currentColor so VS Code can apply its own active and inactive
+  states without a second file.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <rect x="4" y="4" width="2.6" height="16" rx="1.3" fill="currentColor"/>
+  <path d="M10.5 8.5a5 5 0 0 1 0 7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity="0.85"/>
+  <path d="M14.5 5.5a9.5 9.5 0 0 1 0 13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity="0.5"/>
+  <path d="M18.5 3a14 14 0 0 1 0 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity="0.25"/>
+</svg>

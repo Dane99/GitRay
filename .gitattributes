@@ -1,0 +1,10 @@
+# Normalize to LF in the repository regardless of the platform a contributor is on.
+# Windows checkouts still get CRLF locally when core.autocrlf is enabled; GitRay reads
+# both through the same normalization, so the working tree's choice does not matter.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.jpg binary
+*.gif binary
+*.vsix binary
