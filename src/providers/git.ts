@@ -23,7 +23,7 @@ export function prRef(prNumber: number): string {
 /**
  * Where GitRay parks its own copy of the mainline.
  *
- * Deliberately *not* `refs/remotes/origin/<branch>`. Advancing the real remote-tracking
+ * Deliberately *not* `refs/remotes/<remote>/<branch>`. Advancing the real remote-tracking
  * ref would change what `git status` and every other tool reports — suddenly announcing
  * "your branch is behind by 12 commits" is the user's business, not an extension's side
  * effect. A private ref gives GitRay the fresh tip it needs and leaves their git alone.
@@ -74,12 +74,19 @@ export class Git {
     }
   }
 
-  async hasRemote(name = 'origin'): Promise<boolean> {
+  /**
+   * Every configured remote, in git's own order.
+   *
+   * Which of them GitRay should be talking to is not a question for this class — see
+   * remoteSelection.ts. Nothing here defaults to `origin`, deliberately: a fork's `origin`
+   * answers every one of these calls without error and with nothing in it.
+   */
+  async remotes(): Promise<string[]> {
     try {
       const out = await this.git(['remote']);
-      return out.split('\n').some((line) => line.trim() === name);
+      return out.split('\n').map((line) => line.trim()).filter(Boolean);
     } catch {
-      return false;
+      return [];
     }
   }
 
@@ -90,7 +97,7 @@ export class Git {
    * rewrites are applied — a corporate config that maps every github.com URL onto an
    * internal mirror should be visible to whoever is deciding which host this is.
    */
-  async remoteUrl(name = 'origin'): Promise<string | undefined> {
+  async remoteUrl(name: string): Promise<string | undefined> {
     try {
       return (await this.git(['remote', 'get-url', name])).trim() || undefined;
     } catch {
@@ -124,7 +131,7 @@ export class Git {
    * handshake. Callers should filter out pull requests whose head object is already
    * present so an idle poll transfers nothing at all.
    */
-  async fetchPullRequests(prNumbers: readonly number[], remote = 'origin'): Promise<void> {
+  async fetchPullRequests(prNumbers: readonly number[], remote: string): Promise<void> {
     if (prNumbers.length === 0) return;
     const refspecs = prNumbers.map((n) => `+refs/pull/${n}/head:${prRef(n)}`);
     await this.git(['fetch', '--no-tags', '--quiet', remote, ...refspecs]);
@@ -199,13 +206,15 @@ export class Git {
    * GitRay's own copy wins when it exists, because it is the one this extension keeps
    * current; the user's remote-tracking ref is the fallback for everything that happens
    * before the first mainline fetch, or when fetching is turned off entirely.
+   *
+   * That fallback needs a remote to name, and a repository can have none — in which case
+   * GitRay's own copy, if some earlier session left one, is the only answer available.
    */
-  async mainlineTip(branch: string, remote = 'origin'): Promise<string | undefined> {
+  async mainlineTip(branch: string, remote: string | undefined): Promise<string | undefined> {
     if (!branch) return undefined;
-    return (
-      (await this.refOid(mainlineRef(branch))) ??
-      (await this.refOid(`refs/remotes/${remote}/${branch}`))
-    );
+    const own = await this.refOid(mainlineRef(branch));
+    if (own || !remote) return own;
+    return this.refOid(`refs/remotes/${remote}/${branch}`);
   }
 
   /**
@@ -223,7 +232,10 @@ export class Git {
    * Undefined when the branch is unknown locally, in which case callers fall back to the
    * merge base.
    */
-  async mainlineBase(baseRefName: string, remote = 'origin'): Promise<string | undefined> {
+  async mainlineBase(
+    baseRefName: string,
+    remote: string | undefined
+  ): Promise<string | undefined> {
     const tip = await this.mainlineTip(baseRefName, remote);
     if (!tip) return undefined;
     return this.mergeBase(tip);
@@ -235,7 +247,7 @@ export class Git {
    * One refspec, forced, into the private namespace — the same shape as a pull request
    * head fetch, and just as incapable of touching a local branch or the working tree.
    */
-  async fetchMainline(branch: string, remote = 'origin'): Promise<void> {
+  async fetchMainline(branch: string, remote: string): Promise<void> {
     if (!branch) return;
     await this.git([
       'fetch',
@@ -252,7 +264,7 @@ export class Git {
    * Undefined in a repository where nobody ever set it, which is common enough that
    * callers need a fallback rather than treating it as an error.
    */
-  async defaultBranch(remote = 'origin'): Promise<string | undefined> {
+  async defaultBranch(remote: string): Promise<string | undefined> {
     try {
       const out = await this.git(['symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`], [1, 128]);
       const ref = out.trim();

@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -353,6 +353,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Fetch open pull request heads into the isolated `refs/gitray/*` namespace so line-level indicators can be computed locally. This never merges, rebases, or checks anything out. When disabled, GitRay falls back to file-level indicators only."
+        },
+        "gitray.remote": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Git remote to fetch pull request heads and the mainline from, for example `upstream`. Leave empty to detect it: GitRay uses the remote pointing at whichever repository the GitHub CLI resolves, and otherwise prefers `upstream`, then `github`, then `origin` — the same order `gh` uses. Set this when you work in a fork and the pull requests live somewhere other than `origin`."
         },
         "gitray.mainline.trackDrift": {
           "type": "boolean",

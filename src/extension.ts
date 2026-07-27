@@ -66,7 +66,7 @@ async function build(context: vscode.ExtensionContext): Promise<vscode.Disposabl
   log.info(`attached to ${repository.root}`);
 
   const store = new Store();
-  const analyzer = new Analyzer(repository.git, store);
+  const analyzer = new Analyzer(repository.git, store, repository.remotes);
   const engine = new SyncEngine(repository, store, analyzer);
   const scanner = new CollisionScanner(repository, store, analyzer);
   const scheduler = new Scheduler(engine, repository);

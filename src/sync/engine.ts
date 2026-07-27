@@ -13,6 +13,7 @@ import { matchesAny } from '../core/glob.js';
 import type { Repository } from '../providers/repository.js';
 import { toState, type GitHubFailure } from '../providers/github.js';
 import { prRef } from '../providers/git.js';
+import { describeUnusableRemote } from '../providers/remoteSelection.js';
 import type { Store } from '../model/store.js';
 import type { Analyzer } from '../model/analyzer.js';
 
@@ -35,6 +36,8 @@ const NEVER = 0;
 export class SyncEngine {
   private login: string | undefined;
   private probed = false;
+  /** The remote the settled transport was probed against. See `detectRemoteChange`. */
+  private probedRemote: string | undefined;
   private lastHeadSha: string | undefined;
   private mainlineBranch: string | undefined;
   /** When the mainline fetch was last *attempted* — success or not. See below. */
@@ -110,12 +113,15 @@ export class SyncEngine {
 
   /** Returns undefined when the store has already been put into a degraded state. */
   private async fetchPullRequests(config: Config): Promise<PullRequest[] | undefined> {
+    await this.detectRemoteChange();
+
     if (!this.probed) {
       const state = await this.repository.github.probe();
       if (state.kind !== 'ok') return this.degrade(state);
 
       this.login = state.login;
       this.probed = true;
+      this.probedRemote = await this.repository.remotes.name();
       log.info(
         `connected to ${state.nameWithOwner} as ${state.login} via ${
           state.transport === 'cli' ? 'the GitHub CLI' : 'your editor’s GitHub sign-in'
@@ -219,8 +225,9 @@ export class SyncEngine {
       return;
     }
 
-    if (!(await this.repository.git.hasRemote())) {
-      this.store.setDegraded('no-remote', 'This repository has no `origin` remote to fetch from.');
+    const remote = await this.repository.remotes.choose();
+    if (remote.kind !== 'ok') {
+      this.store.setDegraded('no-remote', describeUnusableRemote(remote));
       return;
     }
 
@@ -243,14 +250,21 @@ export class SyncEngine {
     }
 
     if (missing.length > 0) {
-      log.info(`fetching ${missing.length} pull request head(s): ${missing.join(', ')}`);
+      log.info(
+        `fetching ${missing.length} pull request head(s) from ${remote.name}: ${missing.join(', ')}`
+      );
       try {
-        await timed('git fetch', () => this.repository.git.fetchPullRequests(missing));
+        await timed('git fetch', () =>
+          this.repository.git.fetchPullRequests(missing, remote.name)
+        );
       } catch (error) {
         log.warn(`fetch failed: ${error instanceof Error ? error.message : String(error)}`);
+        // The remote is named because it is the thing most likely to be wrong: a fork whose
+        // `origin` has no pull requests fails exactly here, and the message is where anyone
+        // would look before finding `gitray.remote`.
         this.store.setDegraded(
           'fetch-failed',
-          'Could not fetch pull request heads. Showing file-level indicators only.'
+          `Could not fetch pull request heads from \`${remote.name}\`. Showing file-level indicators only. If the pull requests live on a different remote, set \`gitray.remote\`.`
         );
         return;
       }
@@ -273,7 +287,11 @@ export class SyncEngine {
       return;
     }
 
-    const branch = await this.resolveMainlineBranch(config);
+    // Plain git, and it has to keep working when GitHub does not — so a repository with no
+    // usable remote still gets whatever an earlier session left in GitRay's namespace.
+    const remote = await this.repository.remotes.name();
+
+    const branch = await this.resolveMainlineBranch(config, remote);
     if (!branch) {
       this.store.setMainline(undefined);
       return;
@@ -286,9 +304,11 @@ export class SyncEngine {
       return;
     }
 
-    if (this.shouldFetchMainline(config, pullRequestClosed)) {
+    if (remote && this.shouldFetchMainline(config, pullRequestClosed)) {
       try {
-        await timed('git fetch mainline', () => this.repository.git.fetchMainline(branch));
+        await timed('git fetch mainline', () =>
+          this.repository.git.fetchMainline(branch, remote)
+        );
       } catch (error) {
         // Whatever is already local is still worth reporting, so a failed fetch degrades
         // to a staler answer rather than to no answer.
@@ -304,7 +324,7 @@ export class SyncEngine {
       }
     }
 
-    const state = await this.readMainline(branch);
+    const state = await this.readMainline(branch, remote);
     this.store.setMainline(state);
 
     if (state && state.tip !== state.base) {
@@ -315,10 +335,13 @@ export class SyncEngine {
   }
 
   /** Where the mainline is now, and where your branch left it. */
-  private async readMainline(branch: string): Promise<MainlineState | undefined> {
+  private async readMainline(
+    branch: string,
+    remote: string | undefined
+  ): Promise<MainlineState | undefined> {
     const { git } = this.repository;
 
-    const tip = await git.mainlineTip(branch);
+    const tip = await git.mainlineTip(branch, remote);
     if (!tip) return undefined;
 
     const base = await git.mergeBase(tip);
@@ -350,12 +373,18 @@ export class SyncEngine {
    * fall back to whatever the open pull requests are targeting, which is the same thing by
    * a different route. Detection is remembered, since it cannot change without a reload.
    */
-  private async resolveMainlineBranch(config: Config): Promise<string | undefined> {
+  private async resolveMainlineBranch(
+    config: Config,
+    remote: string | undefined
+  ): Promise<string | undefined> {
     if (config.mainlineBranch) return config.mainlineBranch;
     if (this.mainlineBranch) return this.mainlineBranch;
 
+    // A fork's `upstream` usually has no recorded HEAD — `git clone` only sets one for the
+    // remote it cloned from — so the pull requests' own base branch carries this case.
     const detected =
-      (await this.repository.git.defaultBranch()) ?? this.mostCommonBaseRef();
+      (remote ? await this.repository.git.defaultBranch(remote) : undefined) ??
+      this.mostCommonBaseRef();
     if (detected) {
       this.mainlineBranch = detected;
       log.info(`tracking mainline drift against ${detected}`);
@@ -378,6 +407,26 @@ export class SyncEngine {
       }
     }
     return best;
+  }
+
+  /**
+   * Re-probe when the remote moves out from under a settled transport.
+   *
+   * `gitray.remote` is a live setting and `git remote add upstream …` is a live repository
+   * change, so the answer this engine fetches refs from can change without a reload. The
+   * probe is what decides *which repository* the metadata comes from, and it normally runs
+   * once per session — leaving it alone here would list pull requests from the old
+   * repository while fetching their heads from the new one, which is the exact split this
+   * whole change exists to close. Only the probe is thrown away; nothing refetches.
+   */
+  private async detectRemoteChange(): Promise<void> {
+    if (!this.probed) return;
+
+    const remote = await this.repository.remotes.name();
+    if (remote === this.probedRemote) return;
+
+    log.info(`the pull request remote changed to ${remote ?? 'none'}; re-probing`);
+    this.probed = false;
   }
 
   /**

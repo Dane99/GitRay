@@ -99,7 +99,7 @@ test('the pull request merge base is genuinely older than the mainline', () => {
   // Without this the scenario would not reproduce the bug at all.
   const api = new Git(root);
   return api.mergeBase(prRef(1)).then(async (mergeBase) => {
-    const mainline = await api.mainlineBase('main');
+    const mainline = await api.mainlineBase('main', 'origin');
     assert.ok(mergeBase, 'expected a merge base');
     assert.ok(mainline, 'expected a mainline base');
     assert.notEqual(mergeBase, mainline, 'the mainline must have moved past the merge base');
@@ -122,7 +122,7 @@ test('measuring against the merge base wrongly attributes upstream work to you',
 
 test('measuring against the mainline reports no work on a clean checkout', async () => {
   const api = new Git(root);
-  const mainline = await api.mainlineBase('main');
+  const mainline = await api.mainlineBase('main', 'origin');
   assert.ok(mainline);
 
   const mainlineText = await api.showFile(mainline, FILE);
@@ -133,7 +133,7 @@ test('measuring against the mainline reports no work on a clean checkout', async
 
 test('your actual edits are still detected against the mainline', async () => {
   const api = new Git(root);
-  const mainline = await api.mainlineBase('main');
+  const mainline = await api.mainlineBase('main', 'origin');
 
   const mine = baseLines();
   mine[CONTESTED] = 'const line10 = MINE;';
@@ -150,6 +150,6 @@ test('your actual edits are still detected against the mainline', async () => {
 
 test('mainlineBase falls back to undefined without a remote-tracking branch', async () => {
   const api = new Git(root);
-  assert.equal(await api.mainlineBase('no-such-branch'), undefined);
-  assert.equal(await api.mainlineBase(''), undefined);
+  assert.equal(await api.mainlineBase('no-such-branch', 'origin'), undefined);
+  assert.equal(await api.mainlineBase('', 'origin'), undefined);
 });

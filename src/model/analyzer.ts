@@ -31,6 +31,7 @@ import type {
 import { compareOrigins } from '../core/types.js';
 import type { Git } from '../providers/git.js';
 import { prRef } from '../providers/git.js';
+import type { RemoteSelector } from '../providers/remoteSelection.js';
 import { alignLines, splitLines, type Alignment } from './lineMap.js';
 import { classifyProximity } from './collision.js';
 import type { Store } from './store.js';
@@ -64,7 +65,9 @@ export class Analyzer {
 
   constructor(
     private readonly git: Git,
-    private readonly store: Store
+    private readonly store: Store,
+    /** Which remote the mainline lives on — `origin` is not a safe assumption in a fork. */
+    private readonly remotes: RemoteSelector
   ) {}
 
   /** Drop everything derived from git state. Call when HEAD moves. */
@@ -310,7 +313,7 @@ export class Analyzer {
   private async mainlineFor(baseRefName: string): Promise<string | undefined> {
     if (this.mainlines.has(baseRefName)) return this.mainlines.get(baseRefName);
 
-    const mainline = await this.git.mainlineBase(baseRefName);
+    const mainline = await this.git.mainlineBase(baseRefName, await this.remotes.name());
     this.mainlines.set(baseRefName, mainline);
     if (!mainline) {
       log.debug(`no remote-tracking ref for ${baseRefName}; using merge base for local edits`);

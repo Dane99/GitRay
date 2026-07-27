@@ -110,7 +110,7 @@ after(() => {
 /** Fetch the mainline the way the sync engine does, into GitRay's own namespace. */
 async function fetchMainline(): Promise<Git> {
   const api = new Git(root);
-  await api.fetchMainline('main');
+  await api.fetchMainline('main', 'origin');
   return api;
 }
 
@@ -121,7 +121,7 @@ async function fetchMainline(): Promise<Git> {
  * it: the analyzer needs a vscode module, and the point here is the git-level agreement.
  */
 async function predictDrift(api: Git, workingLines: string[]) {
-  const tip = await api.mainlineTip('main');
+  const tip = await api.mainlineTip('main', 'origin');
   assert.ok(tip, 'expected a mainline tip');
 
   const base = await api.mergeBase(tip);
@@ -187,7 +187,7 @@ test('the mainline has genuinely moved past where your branch left it', async ()
   // Without this the scenario would not reproduce the gap at all.
   const api = await fetchMainline();
 
-  const tip = await api.mainlineTip('main');
+  const tip = await api.mainlineTip('main', 'origin');
   const base = await api.mergeBase(tip as string);
 
   assert.ok(tip);
@@ -197,7 +197,7 @@ test('the mainline has genuinely moved past where your branch left it', async ()
 
 test('the merged commit is reported, with the pull request number it came from', async () => {
   const api = await fetchMainline();
-  const tip = (await api.mainlineTip('main')) as string;
+  const tip = (await api.mainlineTip('main', 'origin')) as string;
   const base = (await api.mergeBase(tip)) as string;
 
   const commits = await api.commitsIn(base, tip, FILE);
@@ -273,7 +273,7 @@ test('drift is still readable from the remote-tracking ref when fetching is off'
   git(['update-ref', '-d', mainlineRef('main')]);
   git(['fetch', '-q', 'origin']);
 
-  const tip = await api.mainlineTip('main');
+  const tip = await api.mainlineTip('main', 'origin');
 
   assert.equal(
     tip,
@@ -284,8 +284,8 @@ test('drift is still readable from the remote-tracking ref when fetching is off'
 
 test('mainlineTip is undefined when the branch is unknown locally', async () => {
   const api = new Git(root);
-  assert.equal(await api.mainlineTip('no-such-branch'), undefined);
-  assert.equal(await api.mainlineTip(''), undefined);
+  assert.equal(await api.mainlineTip('no-such-branch', 'origin'), undefined);
+  assert.equal(await api.mainlineTip('', 'origin'), undefined);
 });
 
 test('removing GitRay refs takes the mainline copy with it', async () => {
