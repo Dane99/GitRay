@@ -28,7 +28,7 @@ import type {
   PullRequest,
   ResolvedRegion
 } from '../core/types.js';
-import { originKey } from '../core/types.js';
+import { compareOrigins } from '../core/types.js';
 import type { Git } from '../providers/git.js';
 import { prRef } from '../providers/git.js';
 import { alignLines, splitLines, type Alignment } from './lineMap.js';
@@ -168,9 +168,7 @@ export class Analyzer {
     }
 
     resolved.sort(
-      (a, b) =>
-        a.range.start - b.range.start ||
-        originKey(a.origin).localeCompare(originKey(b.origin))
+      (a, b) => a.range.start - b.range.start || compareOrigins(a.origin, b.origin)
     );
     return { path, regions: resolved, degraded };
   }

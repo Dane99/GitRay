@@ -114,7 +114,7 @@ function appendMainlineRegion(
   if (region.origin.kind !== 'mainline') return;
   const { branch, commits } = region.origin;
 
-  md.appendMarkdown(`**\`${escapeMarkdown(branch)}\` has moved under you**\n\n`);
+  md.appendMarkdown(`**\`${codeSpan(branch)}\` has moved under you**\n\n`);
 
   const meta: string[] = [
     `$(git-merge) ${commits.length || 'some'} ${commits.length === 1 ? 'commit' : 'commits'} landed here`
@@ -269,7 +269,19 @@ export function relativeTime(iso: string): string {
   return `${Math.round(days / 30)}mo ago`;
 }
 
-/** Escape the markdown that shows up in real pull request titles. */
-function escapeMarkdown(text: string): string {
+/** Escape the markdown that shows up in real pull request titles and commit subjects. */
+export function escapeMarkdown(text: string): string {
   return text.replace(/[\\`*_{}[\]()#+\-.!|]/g, '\\$&');
+}
+
+/**
+ * Make text safe to put *inside* a code span, which is a different job from escaping it.
+ *
+ * Markdown does not process backslash escapes inside backticks, so running a branch name
+ * through `escapeMarkdown` there renders the backslashes literally — `feat/my-thing` comes
+ * out as `feat\-thing`. A backtick is the only character that can break out of the span,
+ * so dropping it is both necessary and sufficient.
+ */
+export function codeSpan(text: string): string {
+  return text.replace(/`/g, '');
 }

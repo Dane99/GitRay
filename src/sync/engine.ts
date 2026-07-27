@@ -25,12 +25,19 @@ import type { Analyzer } from '../model/analyzer.js';
  */
 const MAINLINE_MAX_AGE_MS = 5 * 60_000;
 
+/**
+ * Marker for "we have never even tried", so the first pass of a session always fetches.
+ * Any real timestamp is far enough in the past to satisfy the age check anyway.
+ */
+const NEVER = 0;
+
 export class SyncEngine {
   private login: string | undefined;
   private probed = false;
   private lastHeadSha: string | undefined;
   private mainlineBranch: string | undefined;
-  private mainlineFetchedAt = 0;
+  /** When the mainline fetch was last *attempted* — success or not. See below. */
+  private mainlineFetchedAt = NEVER;
   /** Set by the developer fixture command; bypasses gh entirely. */
   private fixture: PullRequest[] | undefined;
 
@@ -67,6 +74,10 @@ export class SyncEngine {
         const closed = this.store.setPullRequests(pullRequests);
 
         if (this.fixture) {
+          // Drop any real mainline state read before the fixture was loaded. Leaving it
+          // would show genuine drift underneath the fixture's invented pull requests,
+          // which is a confusing thing for a demo mode to do.
+          this.store.setMainline(undefined);
           this.store.setStatus({ state: 'ready', message: 'Offline fixture' });
           return true;
         }
@@ -248,13 +259,18 @@ export class SyncEngine {
     if (this.shouldFetchMainline(config, pullRequestClosed)) {
       try {
         await timed('git fetch mainline', () => this.repository.git.fetchMainline(branch));
-        this.mainlineFetchedAt = Date.now();
       } catch (error) {
         // Whatever is already local is still worth reporting, so a failed fetch degrades
         // to a staler answer rather than to no answer.
         log.debug(
           `mainline fetch failed: ${error instanceof Error ? error.message : String(error)}`
         );
+      } finally {
+        // The *attempt* is what is recorded, not the success. Timestamping only successes
+        // would leave a session that starts offline retrying on every pass, waiting out a
+        // connection timeout once a minute for as long as it stays offline. A pull request
+        // closing still forces a fetch, so the event that matters is never delayed by this.
+        this.mainlineFetchedAt = Date.now();
       }
     }
 
@@ -288,11 +304,11 @@ export class SyncEngine {
    *
    * Cheap answers first: never when the user turned ref fetching off, always on the first
    * pass of a session and whenever a pull request just left the open list, and otherwise
-   * only once the local copy has gone stale.
+   * only once the last attempt has gone stale.
    */
   private shouldFetchMainline(config: Config, pullRequestClosed: boolean): boolean {
     if (!config.fetchPullRequestRefs) return false;
-    if (this.mainlineFetchedAt === 0 || pullRequestClosed) return true;
+    if (this.mainlineFetchedAt === NEVER || pullRequestClosed) return true;
     return Date.now() - this.mainlineFetchedAt >= MAINLINE_MAX_AGE_MS;
   }
 

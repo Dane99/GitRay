@@ -6,9 +6,10 @@
  */
 
 import * as vscode from 'vscode';
+import { behindMainline } from '../core/types.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
-import { relativeTime } from './hover.js';
+import { codeSpan, relativeTime } from './hover.js';
 
 export class StatusBar implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
@@ -47,9 +48,9 @@ export class StatusBar implements vscode.Disposable {
     }
 
     const mainline = this.store.mainline();
-    const behind = this.store.hasMainlineDrift() ? (mainline?.commits.length ?? 0) : 0;
+    const behind = behindMainline(mainline);
 
-    if (pullRequests.length === 0 && behind === 0) {
+    if (pullRequests.length === 0 && behind.count === 0) {
       // Nothing open and nothing landed means nothing to say. Hiding beats showing a zero.
       this.item.hide();
       return;
@@ -59,7 +60,7 @@ export class StatusBar implements vscode.Disposable {
     // can be absent. Showing a zero for one of them would make the other two harder to read.
     const parts = ['$(radio-tower)'];
     if (pullRequests.length > 0) parts.push(String(pullRequests.length));
-    if (behind > 0) parts.push(`$(git-merge) ${behind}`);
+    if (behind.count > 0) parts.push(`$(git-merge) ${behind.display}`);
     if (collisions > 0) parts.push(`⟂ ${collisions}`);
     this.item.text = parts.join(' ');
 
@@ -73,8 +74,8 @@ export class StatusBar implements vscode.Disposable {
       pullRequests.length > 0
         ? `${pullRequests.length} open pull ${pullRequests.length === 1 ? 'request' : 'requests'} from ${authors.size} ${authors.size === 1 ? 'collaborator' : 'collaborators'}`
         : 'No open pull requests',
-      behind > 0
-        ? `\n\`${mainline?.branch}\` is ${behind} ${behind === 1 ? 'commit' : 'commits'} ahead of where your branch left it`
+      behind.count > 0
+        ? `\n\`${codeSpan(mainline?.branch ?? 'main')}\` is ${behind.capped ? 'more than ' : ''}${behind.count} ${behind.count === 1 && !behind.capped ? 'commit' : 'commits'} ahead of where your branch left it`
         : '',
       collisions > 0
         ? `\n$(warning) **${collisions} ${collisions === 1 ? 'collision' : 'collisions'}** with your current work`

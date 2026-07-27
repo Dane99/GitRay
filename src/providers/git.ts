@@ -9,6 +9,7 @@
 import { run, CommandError } from '../core/exec.js';
 import { parseUnifiedDiff, type FileDiff } from '../model/diffParse.js';
 import type { MainlineCommit } from '../core/types.js';
+import { MAX_LOGGED_COMMITS } from '../core/types.js';
 
 /** Where GitRay parks everything it fetches. Deliberately outside refs/heads. */
 export const GITRAY_NAMESPACE = 'refs/gitray';
@@ -31,14 +32,6 @@ export function mainlineRef(branch: string): string {
   return `${MAINLINE_NAMESPACE}/${branch}`;
 }
 
-/**
- * How many commits `commitsIn` will report.
- *
- * A branch left alone over a holiday can be hundreds behind, and nobody reads past the
- * first handful. Surfaces that show the count should render a run that hits this cap as
- * "20+" rather than claiming the range is exactly this long.
- */
-export const MAX_LOGGED_COMMITS = 20;
 
 export class Git {
   constructor(private readonly cwd: string) {}

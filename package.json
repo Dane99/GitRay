@@ -333,7 +333,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "GitHub logins to hide."
+          "markdownDescription": "GitHub logins to hide. This applies to open pull requests only: work that has already merged still counts, because your next rebase does not care who you muted."
         },
         "gitray.ignoreGlobs": {
           "type": "array",

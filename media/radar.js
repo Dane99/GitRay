@@ -41,9 +41,14 @@
     renderLanes(data.pullRequests || [], data.hueColorIds || []);
 
     // Mainline drift is content in its own right: a branch that is behind is worth a
-    // screen even with nothing open, which used to be the case that rendered empty.
+    // screen even with nothing open, which used to be the case that rendered empty. The
+    // `behind` term matters on its own — drift that overlaps nothing produces no hot spots,
+    // and without it the summary would say "12 commits you do not have" directly above an
+    // empty state claiming nothing is in flight.
     const isEmpty =
-      (data.pullRequests || []).length === 0 && (data.hotspots || []).length === 0;
+      (data.pullRequests || []).length === 0 &&
+      (data.hotspots || []).length === 0 &&
+      !(data.summary.behind > 0);
     emptyEl.hidden = !isEmpty;
     if (isEmpty) renderEmpty(data.summary.message);
   }
@@ -59,8 +64,10 @@
     );
 
     if (summary.behind > 0) {
+      // `behindDisplay` rather than the raw count: the commit log is capped, so a long run
+      // shows as "20+" instead of stating a floor as though it were exact.
       const behind = stat(
-        summary.behind,
+        summary.behindDisplay || summary.behind,
         `${plural(summary.behind, 'commit', 'commits')} on ${summary.mainlineBranch || 'the mainline'} you do not have`
       );
       behind.classList.add('merged');

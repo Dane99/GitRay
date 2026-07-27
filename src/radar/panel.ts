@@ -14,7 +14,7 @@
  */
 
 import * as vscode from 'vscode';
-import { prNumberOf } from '../core/types.js';
+import { behindMainline, prNumberOf } from '../core/types.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import { hueColorId } from '../model/palette.js';
@@ -57,6 +57,8 @@ interface RadarPayload {
     message: string | undefined;
     /** How far the mainline has moved since your branch left it; 0 when it has not. */
     behind: number;
+    /** The same count as it should be shown — `20+` when the log hit its cap. */
+    behindDisplay: string;
     mainlineBranch: string | undefined;
   };
   hotspots: RadarHotspot[];
@@ -182,6 +184,7 @@ export class RadarPanel implements vscode.Disposable {
     }));
 
     const mainline = this.store.mainline();
+    const behind = behindMainline(mainline);
     const hotspots = this.buildHotspots(radarPullRequests);
 
     return {
@@ -194,7 +197,8 @@ export class RadarPanel implements vscode.Disposable {
           : undefined,
         message:
           status.state === 'degraded' || status.state === 'error' ? status.message : undefined,
-        behind: this.store.hasMainlineDrift() ? (mainline?.commits.length ?? 0) : 0,
+        behind: behind.count,
+        behindDisplay: behind.display,
         mainlineBranch: mainline?.branch
       },
       hotspots,

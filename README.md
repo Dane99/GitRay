@@ -81,6 +81,9 @@ Two things are deliberately different:
   own edits — as a near miss or a collision, never as texture.
 - **It keeps working when the rest of GitRay cannot.** Drift is plain git, so it survives a
   missing `gh`, an expired login, and a flight with no wifi.
+- **Muting does not apply.** `gitray.mutedAuthors` and `gitray.mutedPullRequests` hide open
+  pull requests. Once something has merged it is in your future regardless of who wrote it,
+  so drift ignores both lists.
 
 The mainline is re-read when a pull request leaves the open list — that *is* the merge
 event — and otherwise at most every five minutes, which covers a direct push to `main`.
@@ -243,7 +246,7 @@ minutes if the remote is unreachable.
 | `gitray.fetchPullRequestRefs` | `true` | Fetch pull request heads into `refs/gitray/*` so indicators can be line-level. Never merges, rebases, or checks anything out. |
 | `gitray.mainline.trackDrift` | `true` | Flag work that already merged into the mainline and touches your lines. See [When the pull request has already merged](#when-the-pull-request-has-already-merged). |
 | `gitray.mainline.branch` | `""` | Branch to treat as the mainline. Empty means the remote's default branch, falling back to whatever your open pull requests target. |
-| `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. |
+| `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. Applies to open pull requests only — muting does not suppress mainline drift, since your next rebase does not care who you muted. |
 | `gitray.ignoreGlobs` | lockfiles, `dist/**`, minified assets | Files matching these globs never get indicators. |
 | `gitray.maxRegionsPerFile` | `400` | Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator. |
 

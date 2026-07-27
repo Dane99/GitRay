@@ -10,13 +10,12 @@
 
 import * as vscode from 'vscode';
 import type { FileAnalysis, PullRequest, ResolvedRegion } from '../core/types.js';
-import { prNumberOf } from '../core/types.js';
+import { behindMainline, prNumberOf } from '../core/types.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import type { Repository } from '../providers/repository.js';
-import { MAX_LOGGED_COMMITS } from '../providers/git.js';
 import { hueColorId } from '../model/palette.js';
-import { regionHeadline, relativeTime } from './hover.js';
+import { codeSpan, escapeMarkdown, regionHeadline, relativeTime } from './hover.js';
 
 /**
  * Which welcome content the view should show when it has no rows.
@@ -205,19 +204,20 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
   private mainlineItem(): vscode.TreeItem {
     const mainline = this.store.mainline();
     const commits = mainline?.commits ?? [];
-    const capped = commits.length >= MAX_LOGGED_COMMITS;
+    const branch = mainline?.branch ?? 'main';
+    const behind = behindMainline(mainline);
     const affected = this.scanner
       .hotFiles()
       .filter((analysis) => analysis.regions.some((r) => r.origin.kind === 'mainline')).length;
 
     const item = new vscode.TreeItem(
-      `${mainline?.branch ?? 'main'} has moved under you`,
+      `${branch} has moved under you`,
       vscode.TreeItemCollapsibleState.None
     );
-    const count = `${commits.length}${capped ? '+' : ''}`;
+    const noun = behind.count === 1 && !behind.capped ? 'commit' : 'commits';
     item.description = affected > 0
-      ? `${count} commits · ${affected} of your ${affected === 1 ? 'file' : 'files'}`
-      : `${count} ${commits.length === 1 && !capped ? 'commit' : 'commits'} ahead`;
+      ? `${behind.display} ${noun} · ${affected} of your ${affected === 1 ? 'file' : 'files'}`
+      : `${behind.display} ${noun} ahead`;
     item.iconPath = new vscode.ThemeIcon(
       affected > 0 ? 'warning' : 'git-merge',
       new vscode.ThemeColor(
@@ -226,15 +226,19 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     );
 
     const lines = [
-      `**Your branch left \`${mainline?.branch ?? 'main'}\` ${capped ? 'more than ' : ''}${commits.length} ${commits.length === 1 ? 'commit' : 'commits'} ago.**`,
+      `**Your branch left \`${codeSpan(branch)}\` ${behind.capped ? 'more than ' : ''}${behind.count} ${noun} ago.**`,
       '',
       affected > 0
         ? `${affected} of the files you have changed ${affected === 1 ? 'is' : 'are'} touched by what landed. Your next rebase will stop there.`
         : 'None of it touches what you have changed.',
       ''
     ];
+    // Commit subjects and author names are free text from the repository, so they get the
+    // same escaping the hover card gives them rather than being trusted to be plain.
     for (const commit of commits.slice(0, 8)) {
-      lines.push(`- \`${commit.sha}\` ${commit.subject} — ${commit.author}`);
+      lines.push(
+        `- \`${commit.sha}\` ${escapeMarkdown(commit.subject)} — ${escapeMarkdown(commit.author)}`
+      );
     }
     if (commits.length > 8) lines.push(`- … ${commits.length - 8} more`);
 

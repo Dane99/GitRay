@@ -98,6 +98,21 @@ export function prNumberOf(origin: ChangeOrigin): number | undefined {
 }
 
 /**
+ * Tie-break order for two regions that start on the same line.
+ *
+ * The mainline leads, matching every other surface: what has already landed outranks what
+ * might. Pull requests then order by number *numerically* — comparing the origin keys as
+ * strings would put #10 before #9.
+ */
+export function compareOrigins(a: ChangeOrigin, b: ChangeOrigin): number {
+  if (a.kind === 'mainline') {
+    return b.kind === 'mainline' ? a.branch.localeCompare(b.branch) : -1;
+  }
+  if (b.kind === 'mainline') return 1;
+  return a.prNumber - b.prNumber;
+}
+
+/**
  * Stable identity for an origin, for cache keys and change detection.
  *
  * Mainline regions collapse to one key per branch: their content is pinned by the base and
@@ -176,8 +191,39 @@ export interface MainlineState {
   branch: BranchName;
   tip: string;
   base: string;
-  /** Commits between `base` and `tip`, newest first. Capped; see Git.commitsIn. */
+  /** Commits between `base` and `tip`, newest first. Capped at MAX_LOGGED_COMMITS. */
   commits: readonly MainlineCommit[];
+}
+
+/**
+ * How many commits are reported for a range.
+ *
+ * A branch left alone over a holiday can be hundreds behind, and nobody reads past the
+ * first handful. The cap is part of the contract of `MainlineState.commits`, which is why
+ * it lives here rather than with the git call that applies it.
+ */
+export const MAX_LOGGED_COMMITS = 20;
+
+/**
+ * How far behind the mainline is, in the form every surface needs.
+ *
+ * `count` hitting the cap means the real number is *at least* that, so `display` says
+ * `20+`. Stating a capped count as exact is the kind of quiet lie that erodes trust in
+ * everything else on the screen, and it is easy to do by accident — hence one helper
+ * rather than the same conditional copied onto four surfaces.
+ */
+export interface BehindMainline {
+  count: number;
+  /** True when `count` is really a floor, because the log hit its cap. */
+  capped: boolean;
+  /** The count as it should be shown: `12`, or `20+` when truncated. */
+  display: string;
+}
+
+export function behindMainline(state: MainlineState | undefined): BehindMainline {
+  const count = state && state.tip !== state.base ? state.commits.length : 0;
+  const capped = count >= MAX_LOGGED_COMMITS;
+  return { count, capped, display: capped ? `${count}+` : String(count) };
 }
 
 /** Why line-level indicators are unavailable, when they are. */
