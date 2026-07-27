@@ -147,18 +147,19 @@ minutes if the remote is unreachable.
 
 ## Settings
 
-| Setting | Default | |
+| Setting | Default | What it does |
 | --- | --- | --- |
-| `gitray.refreshInterval` | `60` | Seconds between refreshes; `0` for manual only. |
-| `gitray.decorations.mode` | `ambient` | `ambient`, `collisionsOnly`, or `off`. |
-| `gitray.decorations.showInlineAnnotations` | `true` | End-of-line notes. |
-| `gitray.proximityLines` | `3` | How close counts as a near miss. |
+| `gitray.refreshInterval` | `60` | Seconds between refreshes. `0` refreshes only when you ask. |
+| `gitray.decorations.mode` | `ambient` | How much to draw in the editor: `ambient`, `collisionsOnly`, or `off`. |
+| `gitray.decorations.showInlineAnnotations` | `true` | Show a dim end-of-line note on collisions and on the region under your cursor. |
+| `gitray.proximityLines` | `3` | How many lines from your own edit still counts as a near miss. |
 | `gitray.includeDrafts` | `false` | Include draft pull requests. |
-| `gitray.includeOwnPullRequests` | `true` | Turn off to see only other people's work. |
-| `gitray.maxPullRequests` | `30` | Most recently updated first. |
-| `gitray.fetchPullRequestRefs` | `true` | Turn off for file-level indicators only. |
-| `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Hide specific noise. |
-| `gitray.ignoreGlobs` | lockfiles, `dist/**`, minified assets | Never indicated. |
+| `gitray.includeOwnPullRequests` | `true` | Include pull requests you authored. Turn off to see only other people's work. |
+| `gitray.maxPullRequests` | `30` | How many open pull requests to track, most recently updated first. |
+| `gitray.fetchPullRequestRefs` | `true` | Fetch pull request heads into `refs/gitray/*` so indicators can be line-level. Never merges, rebases, or checks anything out. |
+| `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. |
+| `gitray.ignoreGlobs` | lockfiles, `dist/**`, minified assets | Files matching these globs never get indicators. |
+| `gitray.maxRegionsPerFile` | `400` | Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator. |
 
 `GitRay: Toggle Editor Indicators` cycles ambient → collisions only → off, so "quiet but
 still warn me" is one keystroke away.

@@ -181,6 +181,28 @@ test('scalar setting defaults agree between package.json and config.ts', () => {
   assert.ok(compared >= 8, `expected to compare most scalar settings, compared ${compared}`);
 });
 
+test('the README settings table lists exactly the declared settings', () => {
+  // A third source of truth for the settings, and the one with no feedback loop at all:
+  // an undocumented setting is invisible to anyone reading the README, and a renamed one
+  // leaves a row describing a key that no longer exists. Neither fails anything today —
+  // `maxRegionsPerFile` was missing from the table for the whole of 0.1.x.
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const section = readme.match(/^## Settings$([\s\S]*?)^## /m);
+  assert.ok(section, 'expected a "## Settings" section in README.md');
+
+  const documented = new Set(
+    [...section[1].matchAll(/`(gitray\.[A-Za-z0-9.]+)`/g)].map((match) => match[1])
+  );
+  const declared = new Set(Object.keys(manifest.contributes.configuration.properties));
+
+  for (const key of declared) {
+    assert.ok(documented.has(key), `setting "${key}" is declared but absent from the README table`);
+  }
+  for (const key of documented) {
+    assert.ok(declared.has(key), `README documents "${key}", which no longer exists`);
+  }
+});
+
 test('files referenced by the manifest and webview exist', () => {
   const referenced = [
     manifest.contributes.viewsContainers.activitybar[0].icon,
