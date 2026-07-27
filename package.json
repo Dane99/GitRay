@@ -20,6 +20,19 @@
     "merge conflict",
     "collaboration"
   ],
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#131A26",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dane99/GitRay.git"
+  },
+  "homepage": "https://github.com/Dane99/GitRay#readme",
+  "bugs": {
+    "url": "https://github.com/Dane99/GitRay/issues"
+  },
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished"
@@ -452,6 +465,9 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run check && npm run bundle -- --minify",
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "icon": "node scripts/make-icon.mjs",
     "bundle": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "compile": "tsc --noEmit",
@@ -468,6 +484,7 @@
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^7.13.0",
     "@typescript-eslint/parser": "^7.13.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.21.5",
     "eslint": "^8.57.0",
     "tsx": "^4.15.0",

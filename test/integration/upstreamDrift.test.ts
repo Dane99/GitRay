@@ -59,6 +59,9 @@ before(() => {
   git(['config', 'user.email', 'test@example.invalid']);
   git(['config', 'user.name', 'GitRay Test']);
   git(['config', 'commit.gpgsign', 'false']);
+
+  // Keep git from warning about line-ending conversion on every fixture write.
+  git(['config', 'core.autocrlf', 'false']);
   git(['remote', 'add', 'origin', origin]);
 
   write(baseLines());
