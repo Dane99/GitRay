@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -133,6 +133,24 @@
         "icon": "$(bell-slash)"
       },
       {
+        "command": "gitray.muteAuthor",
+        "title": "Mute Author",
+        "category": "GitRay",
+        "icon": "$(bell-slash)"
+      },
+      {
+        "command": "gitray.unmutePullRequest",
+        "title": "Unmute Pull Request",
+        "category": "GitRay",
+        "icon": "$(bell)"
+      },
+      {
+        "command": "gitray.unmuteAuthor",
+        "title": "Unmute Author",
+        "category": "GitRay",
+        "icon": "$(bell)"
+      },
+      {
         "command": "gitray.unmuteAll",
         "title": "Unmute All Pull Requests and Authors",
         "category": "GitRay"
@@ -214,6 +232,31 @@
           "group": "1_gitray@1"
         },
         {
+          "command": "gitray.muteAuthor",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.pr/",
+          "group": "1_gitray@2"
+        },
+        {
+          "command": "gitray.unmutePullRequest",
+          "when": "view == gitray.pulse && viewItem == gitray.mutedPr",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitray.openPullRequest",
+          "when": "view == gitray.pulse && viewItem == gitray.mutedPr",
+          "group": "1_gitray@1"
+        },
+        {
+          "command": "gitray.unmuteAuthor",
+          "when": "view == gitray.pulse && viewItem == gitray.mutedAuthor",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitray.unmuteAll",
+          "when": "view == gitray.pulse && viewItem == gitray.muted",
+          "group": "1_gitray@1"
+        },
+        {
           "command": "gitray.diffWithPullRequest",
           "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
           "group": "inline@1"
@@ -243,10 +286,6 @@
         },
         {
           "command": "gitray.checkoutPullRequest",
-          "when": "false"
-        },
-        {
-          "command": "gitray.mutePullRequest",
           "when": "false"
         }
       ]

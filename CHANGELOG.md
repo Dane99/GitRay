@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.7
+
+- **Muting is a whole feature now.** It had grown lopsided in both directions:
+  `gitray.mutedAuthors` was read by the sync engine but no command ever wrote it, so muting
+  a person meant hand-editing settings.json; and muting a pull request was one click with
+  no way back except *Unmute All*, because nothing anywhere showed you what was muted.
+  - A collapsed **Muted** section at the bottom of the sidebar lists every muted author and
+    pull request, each with an inline unmute button. Muted pull requests keep their title
+    and author, so the row can be judged without opening GitHub.
+  - Entries GitRay is no longer tracking — a number whose pull request merged long ago —
+    still get a row rather than being stranded in the settings forever.
+  - Added `GitRay: Mute Author`, `GitRay: Unmute Pull Request`, and `GitRay: Unmute
+    Author`. All of them, plus `Mute Pull Request`, now appear in the command palette and
+    prompt for their target.
+  - Muted logins are stored as GitHub spells them and matched case-insensitively.
+- Fixed: commands invoked from a sidebar context menu ignored the row they were invoked
+  from. VS Code hands a context menu the tree node, not the argument object the hover card
+  passes, so *Mute* on a pull request opened a quick pick asking which pull request you
+  meant — having just been told.
+
 ## 0.1.6
 
 - **GitRay now flags conflicts with work that has already merged.** Until now only *open*

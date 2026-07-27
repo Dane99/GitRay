@@ -7,7 +7,7 @@
  */
 
 import type { MainlineState, PullRequest } from '../core/types.js';
-import type { Config } from '../core/config.js';
+import { isMutedAuthor, type Config } from '../core/config.js';
 import { log, timed } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
 import type { Repository } from '../providers/repository.js';
@@ -148,14 +148,20 @@ export class SyncEngine {
    * solo repository excluding it left GitRay with nothing to say at all. Standing on the
    * branch costs nothing either way, because the merge base with your own head is that head,
    * so the diff against it is empty and no regions are produced.
+   *
+   * Mute is the one filter whose casualties are kept rather than forgotten. Everything
+   * else here is a standing preference; mute is a decision about a specific pull request or
+   * person, and a decision you cannot see is a decision you cannot take back.
    */
   private applyFilters(pullRequests: readonly PullRequest[], config: Config): PullRequest[] {
     const mutedNumbers = new Set(config.mutedPullRequests);
-    const mutedAuthors = new Set(config.mutedAuthors);
+    const isMuted = (pr: PullRequest): boolean =>
+      mutedNumbers.has(pr.number) || isMutedAuthor(config, pr.author);
+
+    this.store.setMutedPullRequests(pullRequests.filter(isMuted));
 
     return pullRequests
-      .filter((pr) => !mutedNumbers.has(pr.number))
-      .filter((pr) => !mutedAuthors.has(pr.author.toLowerCase()))
+      .filter((pr) => !isMuted(pr))
       .filter((pr) => config.includeDrafts || !pr.isDraft)
       .filter(
         (pr) =>

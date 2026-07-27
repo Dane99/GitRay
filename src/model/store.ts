@@ -34,6 +34,7 @@ interface RegionCacheEntry {
 
 export class Store implements vscode.Disposable {
   private pullRequests = new Map<number, PullRequest>();
+  private muted = new Map<number, PullRequest>();
   private summaries = new Map<string, FileSummary>();
   private hues = new Map<string, number>();
   private regions = new Map<string, RegionCacheEntry>();
@@ -111,6 +112,40 @@ export class Store implements vscode.Disposable {
     return [...this.pullRequests.values()].sort(
       (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
     );
+  }
+
+  // --- Muted ---------------------------------------------------------------------------
+
+  /**
+   * Remember what mute is currently hiding.
+   *
+   * The settings only record numbers and logins, which is enough to filter with and far
+   * too little to review: `#412` says nothing about whose pull request it is or what it
+   * touches. Keeping the filtered-out records here is what lets the tree's Muted section
+   * show a title and an author, so the decision to unmute can be made from the row itself.
+   *
+   * These never reach `summaries`, `hues`, or the region cache — a muted pull request is
+   * hidden from every surface except the one that exists to unhide it.
+   */
+  setMutedPullRequests(pullRequests: readonly PullRequest[]): void {
+    const next = new Map(pullRequests.map((pr) => [pr.number, pr]));
+    if (samePullRequests(this.muted, next)) return;
+
+    this.muted = next;
+    this.onDidChangeEmitter.fire();
+  }
+
+  /** The muted pull request with this number, when GitRay has actually seen it. */
+  mutedPullRequest(number: number): PullRequest | undefined {
+    return this.muted.get(number);
+  }
+
+  /** Open pull requests this author's mute is hiding, most recently updated first. */
+  mutedPullRequestsBy(author: string): PullRequest[] {
+    const wanted = author.toLowerCase();
+    return [...this.muted.values()]
+      .filter((pr) => pr.author.toLowerCase() === wanted)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }
 
   pullRequest(number: number): PullRequest | undefined {
@@ -235,6 +270,7 @@ export class Store implements vscode.Disposable {
   /** Reset to nothing, e.g. when the workspace stops being a GitHub repository. */
   clear(): void {
     this.pullRequests.clear();
+    this.muted.clear();
     this.summaries.clear();
     this.regions.clear();
     this.hues.clear();
