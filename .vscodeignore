@@ -1,7 +1,11 @@
+# Everything here is development-only. The published extension needs just dist/, media/,
+# package.json, and the docs — anything else is dead weight in the VSIX.
 .vscode/**
+.github/**
 node_modules/**
 src/**
 test/**
+scripts/**
 fixtures/**
 out/**
 **/*.ts
@@ -10,3 +14,4 @@ tsconfig.json
 esbuild.mjs
 .eslintrc.json
 .gitignore
+.gitattributes

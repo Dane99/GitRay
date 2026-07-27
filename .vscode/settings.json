@@ -1,0 +1,33 @@
+{
+  // Use the TypeScript version pinned in devDependencies rather than the one bundled with
+  // the editor. Without this, contributors can see diagnostics that `npm run compile`
+  // does not reproduce — a confusing class of "error" that comes purely from version skew
+  // between the editor's compiler and the project's.
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  "editor.formatOnSave": false,
+  "files.eol": "\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // Project vocabulary, so the spell checker stops flagging domain terms.
+  "cSpell.words": [
+    "autocrlf",
+    "codicon",
+    "esbuild",
+    "gitray",
+    "gpgsign",
+    "jsdiff",
+    "nameWithOwner",
+    "noreply",
+    "refname",
+    "refspec",
+    "refspecs",
+    "tsconfig",
+    "tsdk",
+    "unshallow",
+    "vsce",
+    "vsix"
+  ]
+}
