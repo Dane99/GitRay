@@ -4,8 +4,10 @@ See what your collaborators are changing, before git tells you.
 
 GitRay reads your repository's open pull requests and draws them into your editor: a quiet
 ray in the gutter on lines a teammate is editing, escalating to a distinct collision mark
-when their work and yours overlap. The goal is to move conflict discovery from merge time
-to write time, so a team can keep more branches in flight without paying for it later.
+when their work and yours overlap. It watches the mainline too, so a branch that merges
+does not vanish from view at the moment its overlap with your work becomes real. The goal
+is to move conflict discovery from merge time to write time, so a team can keep more
+branches in flight without paying for it later.
 
 Nothing is sent anywhere. GitRay uses your own `gh` CLI for pull request metadata and your
 local `git` for everything else.
@@ -49,6 +51,42 @@ They are not yours, so GitRay does not put them in your gutter.
 If the base branch has no remote-tracking ref, GitRay falls back to the merge base and
 accepts the extra noise rather than going silent.
 
+### When the pull request has already merged
+
+Everything above is about *open* pull requests, which leaves a hole: the moment a
+colleague's branch merges it disappears from the open list — at exactly the moment its
+overlap with your work stops being hypothetical and starts waiting for you at your next
+rebase. Tracking only what is open means going quiet precisely when the predicted risk
+becomes real.
+
+So GitRay treats the mainline as one more collaborator. It keeps its own copy of the branch
+at `refs/gitray/mainline/<branch>` and diffs the range you have not caught up on:
+
+```
+<where your branch left the mainline>  ..  <where the mainline is now>
+```
+
+That first commit is the same one step 3 already uses to decide what counts as your work,
+so the two sets of ranges are in the same coordinate system for free — the drift check
+costs one `git diff` and reuses an alignment that had to be computed anyway. From there the
+comparison is identical to a pull request's, and the verdict reads `main has moved under
+you`.
+
+Two things are deliberately different:
+
+- **Ambient drift is not drawn.** An open pull request earns a quiet ray because someone is
+  working there and might yet move. A merged commit is history: marking every line the
+  mainline has moved since you branched would light up half the repository with changes
+  that have nothing to do with you. Mainline marks appear only where the drift meets your
+  own edits — as a near miss or a collision, never as texture.
+- **It keeps working when the rest of GitRay cannot.** Drift is plain git, so it survives a
+  missing `gh`, an expired login, and a flight with no wifi.
+
+The mainline is re-read when a pull request leaves the open list — that *is* the merge
+event — and otherwise at most every five minutes, which covers a direct push to `main`.
+Its ref lives in the same isolated namespace as everything else: your `refs/remotes/*` are
+untouched, so `git status` never starts reporting a "behind" count you did not ask for.
+
 Adjacency counts as a collision, not a near miss. Two edits that meet at a seam with no
 line between them make git stop and ask — [verified against real merges in the test
 suite](test/integration/gitPipeline.test.ts).
@@ -63,6 +101,12 @@ Everything after step 1 is local. There is no server, no telemetry, and no token
 | `▸` wedge | They inserted lines at this seam. It occupies no line in your copy, so it points at the boundary instead. |
 | `◇` hollow diamond | Their change is within a few lines of yours. Worth knowing about. |
 | `◆` filled diamond + tinted line | Their change overlaps or touches yours. Merging will need a decision. |
+
+Mainline drift uses the same near-miss and collision shapes in a reserved neutral hue, so
+"this already merged" never reads as one more person with a branch open. Its hover leads
+with the commits that landed and says *your next rebase will stop here* rather than
+*merging will need a decision* — the difference between something that has happened and
+something that might.
 
 Each collaborator gets a stable hue derived from their login, so you learn who is who. When
 several people touch one line the ray splits into stacked segments. Hovering any marked
@@ -110,17 +154,19 @@ ambient → collisions only → off from the command palette.
 - **Editor** — gutter rays, overview-ruler ticks, collision tinting, hover cards, and a
   sparse end-of-line annotation on collisions and on the region under your cursor.
   `Alt+F8` / `Shift+Alt+F8` walk between collisions across the whole branch.
-- **GitRay sidebar** — *Collisions* first (hidden entirely when empty), then every open
-  pull request with its files.
-- **Explorer badges** — collaborator count per file, or `⟂` when it collides with you.
-  Folders inherit the badge, so a collapsed tree still shows where the activity is.
-- **Status bar** — `$(radio-tower) 5 · ⟂ 2`, taking a warning background only when
-  something actually overlaps your work.
+- **GitRay sidebar** — `main has moved under you` when the mainline is ahead, then
+  *Collisions* (hidden entirely when empty), then every open pull request with its files.
+- **Explorer badges** — collaborator count per file, `↧` when something that already merged
+  touches it, or `⟂` when either collides with you. Folders inherit the badge, so a
+  collapsed tree still shows where the activity is.
+- **Status bar** — `$(radio-tower) 5 $(git-merge) 12 ⟂ 2`: open pull requests, commits the
+  mainline is ahead by, collisions. Each part is dropped when it is zero, and the item
+  takes a warning background only when something actually overlaps your work.
 - **Radar** (`GitRay: Open Radar`) — the whole repository on one screen. *Hot spots* ranks
-  files by how contested they are; *Lanes* shows each pull request as a row of file blocks
-  sized by change volume.
-- **Compare** — open a real VS Code diff of a collaborator's version of a file against
-  yours, served from the fetched ref.
+  files by how contested they are, including files whose only claimant already merged;
+  *Lanes* shows each pull request as a row of file blocks sized by change volume.
+- **Compare** — open a real VS Code diff of a collaborator's version of a file, or the
+  mainline's, against yours — served from the local ref.
 
 ## Requirements
 
@@ -134,10 +180,11 @@ throwing a notification at you every minute.
 
 ## What it does to your repository
 
-GitRay fetches open pull request heads so it can diff them locally:
+GitRay fetches open pull request heads, and the mainline, so it can diff them locally:
 
 ```
 git fetch --no-tags origin +refs/pull/142/head:refs/gitray/pr/142 ...
+git fetch --no-tags origin +refs/heads/main:refs/gitray/mainline/main
 ```
 
 To be explicit, because it is the reasonable worry:
@@ -150,9 +197,12 @@ To be explicit, because it is the reasonable worry:
   about.
 - **Only open pull requests, and only what is missing.** Each `refs/gitray/pr/<n>` is
   checked against the pull request's current head first, so a poll where nobody pushed
-  transfers nothing at all. Branches without a pull request are never fetched.
+  transfers nothing at all. Branches without a pull request are never fetched, apart from
+  the one mainline.
 - **Isolated namespace.** Everything lands under `refs/gitray/*`: invisible to
-  `git branch`, pruned when a pull request closes.
+  `git branch`, pruned when a pull request closes. In particular the mainline copy is
+  *not* `refs/remotes/origin/main` — advancing that would change what `git status` and
+  every other tool reports, which is your call to make and not an extension's side effect.
 - **Fork pull requests work**, since GitHub publishes fork heads under the base repo's
   `refs/pull/*`.
 
@@ -191,6 +241,8 @@ minutes if the remote is unreachable.
 | `gitray.includeOwnPullRequests` | `true` | Include pull requests you authored. Turn off to see only other people's work. |
 | `gitray.maxPullRequests` | `30` | How many open pull requests to track, most recently updated first. |
 | `gitray.fetchPullRequestRefs` | `true` | Fetch pull request heads into `refs/gitray/*` so indicators can be line-level. Never merges, rebases, or checks anything out. |
+| `gitray.mainline.trackDrift` | `true` | Flag work that already merged into the mainline and touches your lines. See [When the pull request has already merged](#when-the-pull-request-has-already-merged). |
+| `gitray.mainline.branch` | `""` | Branch to treat as the mainline. Empty means the remote's default branch, falling back to whatever your open pull requests target. |
 | `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. |
 | `gitray.ignoreGlobs` | lockfiles, `dist/**`, minified assets | Files matching these globs never get indicators. |
 | `gitray.maxRegionsPerFile` | `400` | Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator. |

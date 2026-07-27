@@ -15,7 +15,7 @@ import type { Scheduler } from '../sync/scheduler.js';
 import type { SyncEngine } from '../sync/engine.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import type { EditorController } from './editorController.js';
-import { pullRequestFileUri } from './contentProvider.js';
+import { mainlineFileUri, pullRequestFileUri } from './contentProvider.js';
 import { openWorkspaceFile } from './open.js';
 import { RadarPanel } from '../radar/panel.js';
 import { pickFixture } from '../dev/fixtures.js';
@@ -111,6 +111,37 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
         repository.uriFor(path),
         pullRequestFileUri(prNumber, path),
         title,
+        { preview: true }
+      );
+    }),
+
+    /**
+     * Diff a file against the mainline's copy of it.
+     *
+     * Pinned to the tip GitRay analyzed, not to `origin/<branch>`: the indicators and the
+     * diff have to agree about which commit "the mainline" means, or the diff will show
+     * changes the marks never predicted.
+     */
+    vscode.commands.registerCommand('gitray.diffWithMainline', async (args?: CommandArgs) => {
+      const { path } = resolve(args);
+      if (!path) {
+        void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
+        return;
+      }
+
+      const mainline = store.mainline();
+      if (!mainline) {
+        void vscode.window.showInformationMessage(
+          'GitRay: the mainline has not been read yet. Try refreshing.'
+        );
+        return;
+      }
+
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        repository.uriFor(path),
+        mainlineFileUri(mainline.tip, path),
+        `${basename(path)} — yours ↔ ${mainline.branch}`,
         { preview: true }
       );
     }),

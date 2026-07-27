@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -64,7 +64,7 @@
       },
       {
         "view": "gitray.pulse",
-        "contents": "No open pull requests to track in this repository.\n\nGitRay indicates work from your repository's open pull requests, so there is nothing to show until one is open.\n[Refresh](command:gitray.refresh)\n[Open settings](command:workbench.action.openSettings?%5B%22gitray%22%5D)",
+        "contents": "Nothing to track in this repository right now.\n\nGitRay indicates work from your repository's open pull requests, and from anything that has landed on the mainline since your branch left it. Neither has anything to say at the moment.\n[Refresh](command:gitray.refresh)\n[Open settings](command:workbench.action.openSettings?%5B%22gitray%22%5D)",
         "when": "gitray.view == 'empty'"
       },
       {
@@ -113,6 +113,12 @@
         "title": "Compare With Collaborator's Version",
         "category": "GitRay",
         "icon": "$(git-compare)"
+      },
+      {
+        "command": "gitray.diffWithMainline",
+        "title": "Compare With the Mainline",
+        "category": "GitRay",
+        "icon": "$(git-merge)"
       },
       {
         "command": "gitray.checkoutPullRequest",
@@ -211,6 +217,11 @@
           "command": "gitray.diffWithPullRequest",
           "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
           "group": "inline@1"
+        },
+        {
+          "command": "gitray.diffWithMainline",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
+          "group": "1_gitray@1"
         }
       ],
       "commandPalette": [
@@ -224,6 +235,10 @@
         },
         {
           "command": "gitray.diffWithPullRequest",
+          "when": "false"
+        },
+        {
+          "command": "gitray.diffWithMainline",
           "when": "false"
         },
         {
@@ -293,6 +308,16 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Fetch open pull request heads into the isolated `refs/gitray/*` namespace so line-level indicators can be computed locally. This never merges, rebases, or checks anything out. When disabled, GitRay falls back to file-level indicators only."
+        },
+        "gitray.mainline.trackDrift": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Watch the mainline for work that landed after your branch left it, and flag the parts that touch your lines. This is what keeps a merged pull request visible: once it closes it leaves every other surface, at exactly the moment its overlap with your work stops being hypothetical and starts waiting for your next rebase."
+        },
+        "gitray.mainline.branch": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Branch to treat as the mainline, for example `main` or `develop`. Leave empty to use the remote's default branch, falling back to whatever your open pull requests target."
         },
         "gitray.mutedPullRequests": {
           "type": "array",
@@ -448,6 +473,16 @@
           "light": "#8a6a1f",
           "highContrast": "#e6c68a",
           "highContrastLight": "#6b5010"
+        }
+      },
+      {
+        "id": "gitray.mainlineForeground",
+        "description": "Accent for work that has already merged into the mainline. Deliberately neutral: the mainline is a place, not a person.",
+        "defaults": {
+          "dark": "#9aa7b8",
+          "light": "#5a6675",
+          "highContrast": "#c3ced9",
+          "highContrastLight": "#3d4652"
         }
       },
       {

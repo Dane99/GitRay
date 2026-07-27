@@ -46,16 +46,22 @@ export class StatusBar implements vscode.Disposable {
       return;
     }
 
-    if (pullRequests.length === 0) {
-      // Nothing open means nothing to say. Hiding beats showing a zero.
+    const mainline = this.store.mainline();
+    const behind = this.store.hasMainlineDrift() ? (mainline?.commits.length ?? 0) : 0;
+
+    if (pullRequests.length === 0 && behind === 0) {
+      // Nothing open and nothing landed means nothing to say. Hiding beats showing a zero.
       this.item.hide();
       return;
     }
 
-    this.item.text =
-      collisions > 0
-        ? `$(radio-tower) ${pullRequests.length} · ⟂ ${collisions}`
-        : `$(radio-tower) ${pullRequests.length}`;
+    // The counts read left to right as "open · behind · colliding", and any of the three
+    // can be absent. Showing a zero for one of them would make the other two harder to read.
+    const parts = ['$(radio-tower)'];
+    if (pullRequests.length > 0) parts.push(String(pullRequests.length));
+    if (behind > 0) parts.push(`$(git-merge) ${behind}`);
+    if (collisions > 0) parts.push(`⟂ ${collisions}`);
+    this.item.text = parts.join(' ');
 
     this.item.backgroundColor =
       collisions > 0 ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
@@ -64,7 +70,12 @@ export class StatusBar implements vscode.Disposable {
     const lines = [
       '**GitRay**',
       '',
-      `${pullRequests.length} open pull ${pullRequests.length === 1 ? 'request' : 'requests'} from ${authors.size} ${authors.size === 1 ? 'collaborator' : 'collaborators'}`,
+      pullRequests.length > 0
+        ? `${pullRequests.length} open pull ${pullRequests.length === 1 ? 'request' : 'requests'} from ${authors.size} ${authors.size === 1 ? 'collaborator' : 'collaborators'}`
+        : 'No open pull requests',
+      behind > 0
+        ? `\n\`${mainline?.branch}\` is ${behind} ${behind === 1 ? 'commit' : 'commits'} ahead of where your branch left it`
+        : '',
       collisions > 0
         ? `\n$(warning) **${collisions} ${collisions === 1 ? 'collision' : 'collisions'}** with your current work`
         : '\nNo overlap with your current work',

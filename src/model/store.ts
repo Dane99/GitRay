@@ -18,11 +18,12 @@ import * as vscode from 'vscode';
 import type {
   ChangeRegion,
   FileSummary,
+  MainlineState,
   PullRequest,
   StatusInfo,
   DegradedReason
 } from '../core/types.js';
-import { assignHues } from './palette.js';
+import { assignHues, MAINLINE_HUE } from './palette.js';
 
 /** Line-level regions for one file from one pull request, keyed to a head commit. */
 interface RegionCacheEntry {
@@ -36,6 +37,7 @@ export class Store implements vscode.Disposable {
   private summaries = new Map<string, FileSummary>();
   private hues = new Map<string, number>();
   private regions = new Map<string, RegionCacheEntry>();
+  private mainlineState: MainlineState | undefined;
   private status: StatusInfo = { state: 'idle', pullRequestCount: 0 };
 
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
@@ -137,6 +139,49 @@ export class Store implements vscode.Disposable {
     return this.hues.get(author) ?? 0;
   }
 
+  /**
+   * The hue a region should be drawn in.
+   *
+   * Origin decides, not the author: mainline drift keeps its reserved slot even when a
+   * single person's commit is what landed, so "main moved under you" never gets mistaken
+   * for "that person has a pull request open".
+   */
+  hueForRegion(region: Pick<ChangeRegion, 'origin' | 'author'>): number {
+    return region.origin.kind === 'mainline' ? MAINLINE_HUE : this.hueFor(region.author);
+  }
+
+  // --- Mainline ------------------------------------------------------------------------
+
+  /**
+   * Record where the mainline is.
+   *
+   * Fires only when the tip or the base actually moved. This runs on every sync pass, and
+   * the usual answer is "exactly where it was" — announcing that would repaint every
+   * surface and retrigger the collision scan once a minute for nothing.
+   */
+  setMainline(state: MainlineState | undefined): void {
+    const previous = this.mainlineState;
+    if (
+      previous?.branch === state?.branch &&
+      previous?.tip === state?.tip &&
+      previous?.base === state?.base
+    ) {
+      return;
+    }
+
+    this.mainlineState = state;
+    this.onDidChangeEmitter.fire();
+  }
+
+  mainline(): MainlineState | undefined {
+    return this.mainlineState;
+  }
+
+  /** True when work has landed on the mainline that your branch does not have yet. */
+  hasMainlineDrift(): boolean {
+    return this.mainlineState !== undefined && this.mainlineState.tip !== this.mainlineState.base;
+  }
+
   // --- Line-level region cache -------------------------------------------------------
 
   cacheRegions(path: string, prNumber: number, headOid: string, baseSha: string, regions: ChangeRegion[]): void {
@@ -193,6 +238,7 @@ export class Store implements vscode.Disposable {
     this.summaries.clear();
     this.regions.clear();
     this.hues.clear();
+    this.mainlineState = undefined;
     this.status = { state: 'idle', pullRequestCount: 0 };
     this.onDidChangeEmitter.fire();
   }

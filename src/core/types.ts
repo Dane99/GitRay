@@ -3,10 +3,10 @@
  *
  * A note on coordinates, because it is the single easiest thing to get wrong here:
  *
- *  - "base" coordinates are line numbers in the file as it exists at the merge base
- *    between your HEAD and a collaborator's pull request head. This is the shared
- *    ancestor both of you edited away from, and it is the coordinate system git itself
- *    uses when deciding whether two changes conflict.
+ *  - "base" coordinates are line numbers in the file as it exists at the shared ancestor
+ *    both sides edited away from — the merge base with a collaborator's pull request head,
+ *    or the commit where your branch left the mainline. This is the coordinate system git
+ *    itself uses when deciding whether two changes conflict.
  *  - "buffer" coordinates are line numbers in the document you are looking at right now,
  *    including unsaved edits.
  *
@@ -22,6 +22,9 @@ export interface LineRange {
   start: number;
   end: number;
 }
+
+/** The ref namespace-free name of the branch GitRay treats as the mainline, e.g. `main`. */
+export type BranchName = string;
 
 /** What a change did to the base text. */
 export type ChangeKind = 'add' | 'modify' | 'delete';
@@ -52,22 +55,84 @@ export interface PullRequestFile {
   deletions: number;
 }
 
+/** One commit that landed on the mainline since your branch left it. */
+export interface MainlineCommit {
+  /** Abbreviated sha, as git prints it. */
+  sha: string;
+  author: string;
+  subject: string;
+  /** ISO 8601, author date. */
+  date: string;
+  /**
+   * The pull request this commit closed, when the subject still says so.
+   *
+   * GitHub's squash merges end the subject with `(#123)` and its merge commits begin with
+   * `Merge pull request #123`, so the number usually survives the merge and the change can
+   * still be linked back to the discussion that produced it. Absent for a direct push.
+   */
+  prNumber?: number;
+}
+
 /**
- * One contiguous edit a collaborator made, expressed against the merge base.
+ * Where a change came from.
  *
- * `baseRange` is where the change lands in the merge-base file. For a pure addition it
- * is empty (start === end), marking the seam the new lines were inserted into.
+ * Two kinds, and the difference is the whole point of tracking the second one:
+ *
+ *  - `pullRequest` is a *forecast*. Someone is working here and has not landed yet, so
+ *    the overlap is still hypothetical and either of you can move.
+ *  - `mainline` is *history*. It already merged, so the overlap is not a prediction — it
+ *    is waiting for you at your next rebase, and only you can resolve it.
+ */
+export type ChangeOrigin =
+  | { kind: 'pullRequest'; prNumber: number }
+  | {
+      kind: 'mainline';
+      branch: BranchName;
+      /** What landed on this file, newest first. Empty when the log could not be read. */
+      commits: readonly MainlineCommit[];
+    };
+
+/** The pull request a region belongs to, or undefined for mainline drift. */
+export function prNumberOf(origin: ChangeOrigin): number | undefined {
+  return origin.kind === 'pullRequest' ? origin.prNumber : undefined;
+}
+
+/**
+ * Stable identity for an origin, for cache keys and change detection.
+ *
+ * Mainline regions collapse to one key per branch: their content is pinned by the base and
+ * tip shas that callers already fold into their own keys, so repeating it here would only
+ * make the strings longer.
+ */
+export function originKey(origin: ChangeOrigin): string {
+  return origin.kind === 'pullRequest' ? `pr:${origin.prNumber}` : `mainline:${origin.branch}`;
+}
+
+/**
+ * One contiguous edit someone else made, expressed against a base commit.
+ *
+ * `baseRange` is where the change lands in the base file. For a pure addition it is empty
+ * (start === end), marking the seam the new lines were inserted into.
+ *
+ * Which base that is depends on the origin: a pull request's regions are in the merge base
+ * between your HEAD and its head, while mainline regions are in the commit where your
+ * branch left the mainline. Both are recorded in `baseSha`, and both are compared against
+ * your own edits expressed in that same commit's coordinates.
  */
 export interface ChangeRegion {
-  prNumber: number;
+  origin: ChangeOrigin;
+  /**
+   * Who to credit. The pull request's author, or — for mainline drift — the author of the
+   * commit that landed, falling back to the branch name when several people contributed.
+   */
   author: string;
-  /** Merge base commit these coordinates belong to. */
+  /** Base commit these coordinates belong to. */
   baseSha: string;
   baseRange: LineRange;
   kind: ChangeKind;
   /** Lines removed from the base text. */
   removed: string[];
-  /** Lines the collaborator put there instead. */
+  /** Lines put there instead. */
   added: string[];
 }
 
@@ -98,6 +163,21 @@ export interface FileSummary {
   authors: string[];
   additions: number;
   deletions: number;
+}
+
+/**
+ * Where the mainline is, as of the last time GitRay looked.
+ *
+ * `tip` is what the branch points at on the remote; `base` is where your branch left it.
+ * When the two differ, work has landed that you have not rebased onto yet — which is the
+ * whole reason this is tracked.
+ */
+export interface MainlineState {
+  branch: BranchName;
+  tip: string;
+  base: string;
+  /** Commits between `base` and `tip`, newest first. Capped; see Git.commitsIn. */
+  commits: readonly MainlineCommit[];
 }
 
 /** Why line-level indicators are unavailable, when they are. */

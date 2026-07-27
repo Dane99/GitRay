@@ -12,11 +12,15 @@
 
 import * as vscode from 'vscode';
 import type { FileAnalysis, PullRequest, ResolvedRegion, Severity } from '../core/types.js';
+import { originKey } from '../core/types.js';
 import type { Config } from '../core/config.js';
-import { buildHover } from './hover.js';
+import { buildHover, regionHeadline, regionLabel } from './hover.js';
 import { collisionHex, hueHex, nearMissHex, themeColor } from './colors.js';
 import { collisionIcon, nearMissIcon, rayIcon, seamIcon } from './svg.js';
 import { hueColorId } from '../model/palette.js';
+
+/** How a region's hue is decided. Origin matters, so the whole region is handed over. */
+export type HueResolver = (region: ResolvedRegion) => number;
 
 /** How long a newly-arrived change stays emphasized before settling into ambient. */
 const FLASH_MS = 1200;
@@ -78,7 +82,7 @@ export class DecorationPainter implements vscode.Disposable {
     editor: vscode.TextEditor,
     analysis: FileAnalysis,
     pullRequests: ReadonlyMap<number, PullRequest>,
-    hueFor: (author: string) => number,
+    hueFor: HueResolver,
     config: Config
   ): void {
     if (config.decorationMode === 'off') {
@@ -208,14 +212,14 @@ export class DecorationPainter implements vscode.Disposable {
 }
 
 function regionKey(region: ResolvedRegion): string {
-  return `${region.prNumber}:${region.baseSha}:${region.baseRange.start}-${region.baseRange.end}`;
+  return `${originKey(region.origin)}:${region.baseSha}:${region.baseRange.start}-${region.baseRange.end}`;
 }
 
 /** Fold overlapping regions down to one mark per line. */
 function bucketByLine(
   regions: readonly ResolvedRegion[],
   lineCount: number,
-  hueFor: (author: string) => number,
+  hueFor: HueResolver,
   flashing: ReadonlySet<string>
 ): Map<number, LineBucket> {
   const buckets = new Map<number, LineBucket>();
@@ -229,7 +233,7 @@ function bucketByLine(
       buckets.set(line, bucket);
     }
 
-    const hue = hueFor(region.author);
+    const hue = hueFor(region);
     if (!bucket.hues.includes(hue)) bucket.hues.push(hue);
     if (rank(region.severity) > rank(bucket.severity)) bucket.severity = region.severity;
     bucket.seam ||= seam;
@@ -364,19 +368,25 @@ function buildAnnotations(
     if (annotated.has(line) || line >= editor.document.lineCount) return;
     annotated.add(line);
 
-    const primary = bucket.regions[0];
+    // Mainline drift leads when it is present: it is the one thing on the line that has
+    // already happened, so it outranks a pull request that may still move.
+    const primary = bucket.regions.find((r) => r.origin.kind === 'mainline') ?? bucket.regions[0];
     if (!primary) return;
 
     const others = bucket.regions.length - 1;
-    const pr = pullRequests.get(primary.prNumber);
+    const pr =
+      primary.origin.kind === 'pullRequest'
+        ? pullRequests.get(primary.origin.prNumber)
+        : undefined;
     const mark = bucket.severity === 'collision' ? '⟂' : '·';
     const suffix = others > 0 ? ` +${others}` : '';
-    const title = bucket.severity === 'collision' && pr ? ` ${truncate(pr.title, 40)}` : '';
+    const title =
+      bucket.severity === 'collision' ? ` ${truncate(regionHeadline(primary, pr), 40)}` : '';
 
     annotations.push({
       range: new vscode.Range(line, editor.document.lineAt(line).text.length, line, editor.document.lineAt(line).text.length),
       renderOptions: {
-        after: { contentText: `${mark} ${primary.author} #${primary.prNumber}${suffix}${title}` }
+        after: { contentText: `${mark} ${regionLabel(primary)}${suffix}${title}` }
       }
     });
   };

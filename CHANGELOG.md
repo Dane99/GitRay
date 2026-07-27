@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.6
+
+- **GitRay now flags conflicts with work that has already merged.** Until now only *open*
+  pull requests were watched, which left a hole at the worst possible place: the moment a
+  colleague's branch merged it vanished from every surface — at exactly the moment its
+  overlap with your work stopped being hypothetical and started waiting for you at your
+  next rebase. The mainline is now treated as one more collaborator, and the verdict reads
+  `main has moved under you`.
+  - Marks appear only where the drift meets your own edits. Ambient mainline activity is
+    deliberately not drawn: a merged commit is history, and marking every line the mainline
+    has moved since you branched would light up half the repository.
+  - The hover leads with the commits that landed and says *your next rebase will stop
+    here*, and links back to the original pull request when the merge left its number in
+    the subject.
+  - Drift is plain git, so it keeps working with `gh` missing, unauthenticated, or offline.
+  - The sidebar, status bar, explorer badges, and radar all report it, so a day with
+    nothing open is no longer a day where GitRay has nothing to say.
+  - The mainline is re-read when a pull request leaves the open list — that *is* the merge
+    event — and otherwise at most every five minutes.
+  - Its copy lives at `refs/gitray/mainline/<branch>`, never `refs/remotes/origin/<branch>`:
+    advancing the latter would make `git status` start reporting a "behind" count you did
+    not ask for.
+  - Configurable with `gitray.mainline.trackDrift` and `gitray.mainline.branch`.
+- Added `GitRay: Compare With the Mainline`, which diffs a file against the exact commit
+  the indicators were computed from.
+
 ## 0.1.5
 
 - Documented what `ambient` and `collisionsOnly` each show and hide — including that
