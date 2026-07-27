@@ -1,7 +1,7 @@
 /**
  * One sync pass: ask GitHub what is open, make sure the objects are local, update the store.
  *
- * Cost per pass is one `gh` request plus, at most, one `git fetch` — and the fetch only
+ * Cost per pass is one metadata request plus, at most, one `git fetch` — and the fetch only
  * runs for pull requests whose head commit we do not already have, so a quiet minute
  * transfers nothing.
  */
@@ -11,6 +11,7 @@ import { isMutedAuthor, type Config } from '../core/config.js';
 import { log, timed } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
 import type { Repository } from '../providers/repository.js';
+import { toState, type GitHubFailure } from '../providers/github.js';
 import { prRef } from '../providers/git.js';
 import type { Store } from '../model/store.js';
 import type { Analyzer } from '../model/analyzer.js';
@@ -59,7 +60,7 @@ export class SyncEngine {
    * surfacing an exception, because this runs on a timer and a modal every 60 seconds
    * would be intolerable. The return value is how the scheduler learns about transient
    * failures anyway — false means "the network let us down, back off", while persistent
-   * conditions like a missing gh return true so they keep being probed at the normal
+   * conditions like being signed out return true so they keep being probed at the normal
    * cadence.
    */
   async sync(config: Config): Promise<boolean> {
@@ -87,7 +88,7 @@ export class SyncEngine {
         // is what makes the mainline worth re-reading right now rather than on the floor.
         await this.updateMainline(config, closed.length > 0);
       } else if (!this.fixture) {
-        // gh is missing, unauthenticated, or unreachable. Mainline drift needs none of
+        // No credentials, no repository, or no network. Mainline drift needs none of
         // those — it is plain git — so it keeps working when the rest of GitRay cannot.
         await this.updateMainline(config, false);
       }
@@ -110,33 +111,56 @@ export class SyncEngine {
   /** Returns undefined when the store has already been put into a degraded state. */
   private async fetchPullRequests(config: Config): Promise<PullRequest[] | undefined> {
     if (!this.probed) {
-      const state = await this.repository.gh.probe();
-      switch (state.kind) {
-        case 'missing':
-          this.store.setDegraded('gh-missing', 'The GitHub CLI (gh) was not found on your PATH.');
-          return undefined;
-        case 'unauthenticated':
-          this.store.setDegraded('gh-unauthenticated', 'Run `gh auth login` to connect to GitHub.');
-          return undefined;
-        case 'offline':
-          this.store.setDegraded('offline', `GitHub is unreachable — ${state.message}`);
-          return undefined;
-        case 'no-repo':
-          this.store.setDegraded('not-a-repo', state.message);
-          return undefined;
-        case 'ok':
-          this.login = state.login;
-          this.probed = true;
-          log.info(`connected to ${state.nameWithOwner} as ${state.login}`);
-          break;
-      }
+      const state = await this.repository.github.probe();
+      if (state.kind !== 'ok') return this.degrade(state);
+
+      this.login = state.login;
+      this.probed = true;
+      log.info(
+        `connected to ${state.nameWithOwner} as ${state.login} via ${
+          state.transport === 'cli' ? 'the GitHub CLI' : 'your editor’s GitHub sign-in'
+        }`
+      );
     }
 
-    const raw = await timed('gh pr list', () =>
-      this.repository.gh.listPullRequests(config.maxPullRequests, config.includeDrafts)
-    );
+    try {
+      const raw = await timed('list pull requests', () =>
+        this.repository.github.listPullRequests(config.maxPullRequests, config.includeDrafts)
+      );
+      return this.applyFilters(raw, config);
+    } catch (error) {
+      // A session that expired, a token that was revoked, a network that went away — all
+      // of them arrive here rather than at the probe, because the probe already succeeded
+      // once. Re-probing next pass is what lets the CLI take over from a dead session, or
+      // the other way round, without a reload.
+      this.probed = false;
+      log.warn(
+        `could not list pull requests: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return this.degrade(toState(error));
+    }
+  }
 
-    return this.applyFilters(raw, config);
+  /**
+   * Put the store into the degraded state a failure calls for, and return "no answer".
+   *
+   * The reason matters as much as the message: it is what decides whether the sidebar
+   * offers a sign-in row, and what tells the scheduler to back off rather than retry a
+   * condition that will not change on its own.
+   */
+  private degrade(state: GitHubFailure): undefined {
+    switch (state.kind) {
+      case 'signed-out':
+        this.store.setDegraded(state.canSignIn ? 'signed-out' : 'gh-required', state.message);
+        break;
+      case 'offline':
+        this.store.setDegraded('offline', `GitHub is unreachable — ${state.message}`);
+        break;
+      case 'no-repo':
+        this.store.setDegraded('not-a-repo', state.message);
+        break;
+    }
+    return undefined;
   }
 
   /**

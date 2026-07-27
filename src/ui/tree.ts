@@ -222,9 +222,10 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
   /**
    * The degraded-state row.
    *
-   * Deliberately a tree row rather than a notification: the reasons here (gh not
-   * installed, not authenticated, shallow clone) are persistent conditions, and a modal
-   * that reappears every poll would be worse than the missing feature.
+   * Deliberately a tree row rather than a notification: the reasons here (signed out, no
+   * GitHub remote, shallow clone) are persistent conditions, and a modal that reappears
+   * every poll would be worse than the missing feature. Being signed out is the one that
+   * has a fix worth a click, so that row — and only that row — is a button.
    */
   private statusItem(): vscode.TreeItem {
     const status = this.store.currentStatus();
@@ -241,7 +242,13 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     item.tooltip = status.message;
     item.contextValue = 'gitray.status';
 
-    if (status.reason === 'gh-unauthenticated') {
+    if (status.reason === 'signed-out') {
+      item.iconPath = new vscode.ThemeIcon('sign-in');
+      item.command = {
+        command: 'gitray.signIn',
+        title: 'Sign in to GitHub'
+      };
+    } else if (status.reason === 'gh-required') {
       item.command = {
         command: 'gitray.showOutput',
         title: 'Show log'

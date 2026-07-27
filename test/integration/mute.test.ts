@@ -78,7 +78,7 @@ function fakeRepository() {
     uriFor: (path: string) => Uri.file(`${ROOT}/${path}`),
     relativePath: () => undefined,
     git: { headSha: async () => 'head1' },
-    gh: {}
+    github: { pullRequestUrl: () => undefined, canCheckout: async () => false }
   } as never;
 }
 
