@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Documented `gitray.maxRegionsPerFile`, which the README settings table had omitted since
+  the first release, and rewrote that table so each entry says what the setting does
+  instead of trailing off into a fragment.
+
 ## 0.1.2
 
 - `gitray.includeOwnPullRequests` now defaults to `true`. Excluding your own work only
