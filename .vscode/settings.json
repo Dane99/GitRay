@@ -26,6 +26,7 @@
     "refspecs",
     "tsconfig",
     "tsdk",
+    "unmute",
     "unshallow",
     "vsce",
     "vsix"
