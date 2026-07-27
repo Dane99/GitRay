@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+
+- Documented what `ambient` and `collisionsOnly` each show and hide — including that
+  `collisionsOnly` still shows near misses — in a README section the settings table now
+  links to.
+
 ## 0.1.4
 
 - The exponential backoff for unreachable remotes now actually engages. The sync engine

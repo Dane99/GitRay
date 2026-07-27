@@ -71,6 +71,40 @@ line gives the pull request, the author, a diff of their change, and one-click a
 The only filled shape in the set is the collision mark — the one state that means *look
 now* — so it stays legible even without color.
 
+### How much the editor shows: `ambient` vs `collisionsOnly`
+
+`gitray.decorations.mode` decides how much of that vocabulary the editor actually uses.
+The split is by severity: every change is classified as *ambient* (nowhere near your
+work), a *near miss* (within `gitray.proximityLines` of an edit of yours), or a
+*collision* (overlaps or touches one).
+
+- **`ambient`** (the default) draws all three. The quiet rays and seam wedges are the
+  point of this mode: they are what lets you notice a teammate drifting toward your part
+  of a file while the distance is still comfortable, and they are deliberately dimmed so
+  they read as texture, not as alerts. Near misses and collisions render on top of that
+  layer, exactly as in the table above.
+- **`collisionsOnly`** drops the ambient layer and keeps everything that involves *you*.
+  Despite the name, that includes near misses — the hollow diamond still appears when a
+  change lands within the proximity window — because "about to overlap" is a warning, not
+  ambience. What disappears is every mark for changes that are far from your own edits:
+  no rays, no seam wedges, and therefore no hover cards on those lines, since a hover
+  needs a decorated line to attach to.
+
+Things that do **not** change between the two modes:
+
+- Collisions look identical — same filled diamond, tinted line, ruler mark, and
+  end-of-line annotation. Neither mode makes a real conflict quieter.
+- Everything outside the editor is unaffected. The sidebar, explorer badges, status bar,
+  and radar always reflect all tracked activity, so in `collisionsOnly` they are where
+  you go to see what the ambient layer would have told you.
+- `Alt+F8` / `Shift+Alt+F8` still walk every collision, in files decorated or not.
+
+A reasonable way to choose: stay on `ambient` until the rays stop being information —
+a repository with heavy churn, a file everyone touches — and switch to `collisionsOnly`
+there rather than turning the extension `off`, since the warnings you actually act on
+are identical in both. `GitRay: Toggle Editor Indicators` cycles
+ambient → collisions only → off from the command palette.
+
 ## Surfaces
 
 - **Editor** — gutter rays, overview-ruler ticks, collision tinting, hover cards, and a
@@ -150,7 +184,7 @@ minutes if the remote is unreachable.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `gitray.refreshInterval` | `60` | Seconds between refreshes. `0` refreshes only when you ask. |
-| `gitray.decorations.mode` | `ambient` | How much to draw in the editor: `ambient`, `collisionsOnly`, or `off`. |
+| `gitray.decorations.mode` | `ambient` | How much to draw in the editor: `ambient`, `collisionsOnly`, or `off`. The difference is spelled out in [How much the editor shows](#how-much-the-editor-shows-ambient-vs-collisionsonly). |
 | `gitray.decorations.showInlineAnnotations` | `true` | Show a dim end-of-line note on collisions and on the region under your cursor. |
 | `gitray.proximityLines` | `3` | How many lines from your own edit still counts as a near miss. |
 | `gitray.includeDrafts` | `false` | Include draft pull requests. |
