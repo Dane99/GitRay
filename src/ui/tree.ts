@@ -6,11 +6,18 @@
  * collisions section disappears entirely when there is nothing in it — an empty
  * "Collisions (0)" header trains people to ignore the one thing this view exists to
  * surface.
+ *
+ * Muted work sits last, collapsed, and only when there is something in it. It is the
+ * inverse of everything above — a list of what GitRay has been told *not* to say — so it
+ * gets the least attention a section can get while still existing. It has to exist,
+ * though: muting is one click and, without somewhere to see the result, taking it back
+ * meant hand-editing settings.json.
  */
 
 import * as vscode from 'vscode';
 import type { FileAnalysis, PullRequest, ResolvedRegion } from '../core/types.js';
 import { behindMainline, prNumberOf } from '../core/types.js';
+import { readConfig } from '../core/config.js';
 import type { Store } from '../model/store.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import type { Repository } from '../providers/repository.js';
@@ -34,7 +41,12 @@ type Node =
   | { kind: 'collisionRegion'; analysis: FileAnalysis; region: ResolvedRegion }
   | { kind: 'pullRequestsHeader' }
   | { kind: 'pullRequest'; pr: PullRequest }
-  | { kind: 'pullRequestFile'; pr: PullRequest; path: string; additions: number; deletions: number };
+  | { kind: 'pullRequestFile'; pr: PullRequest; path: string; additions: number; deletions: number }
+  | { kind: 'mutedHeader' }
+  // `prNumber` and `author` are named to match what the commands read off a context-menu
+  // argument, so the inline unmute buttons act on the row they were clicked from.
+  | { kind: 'mutedPullRequest'; prNumber: number; pr: PullRequest | undefined }
+  | { kind: 'mutedAuthor'; author: string; hiding: number };
 
 export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.Disposable {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<Node | undefined>();
@@ -50,7 +62,13 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     this.disposables.push(
       this.onDidChangeTreeDataEmitter,
       this.store.onDidChange(() => this.refresh()),
-      this.scanner.onDidChange(() => this.refresh())
+      this.scanner.onDidChange(() => this.refresh()),
+      // The Muted section reads the settings directly, so it is the one part of this view
+      // that can change without the store changing — someone editing settings.json by hand,
+      // or a mute applied while gh is unreachable and no sync is landing.
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('gitray')) this.refresh();
+      })
     );
     this.publishViewState();
   }
@@ -103,6 +121,12 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
         return this.pullRequestItem(node.pr);
       case 'pullRequestFile':
         return this.pullRequestFileItem(node);
+      case 'mutedHeader':
+        return this.mutedHeaderItem();
+      case 'mutedPullRequest':
+        return this.mutedPullRequestItem(node.prNumber, node.pr);
+      case 'mutedAuthor':
+        return this.mutedAuthorItem(node.author, node.hiding);
     }
   }
 
@@ -133,9 +157,39 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
             deletions: file.deletions
           }));
 
+      case 'mutedHeader':
+        return this.mutedNodes();
+
       default:
         return [];
     }
+  }
+
+  /**
+   * What mute is currently hiding, authors before individual pull requests.
+   *
+   * Built from the settings rather than from the store, because the settings are what mute
+   * actually is: a number stays muted after its pull request merges, and an author stays
+   * muted while they have nothing open. Both would vanish from a store-derived list and
+   * silently keep filtering. The store is consulted only to put a title and a face to the
+   * rows it happens to know about.
+   */
+  private mutedNodes(): Node[] {
+    const config = readConfig(this.repository.folder.uri);
+
+    const authors: Node[] = config.mutedAuthors.map((author) => ({
+      kind: 'mutedAuthor',
+      author,
+      hiding: this.store.mutedPullRequestsBy(author).length
+    }));
+
+    const pullRequests: Node[] = config.mutedPullRequests.map((prNumber) => ({
+      kind: 'mutedPullRequest',
+      prNumber,
+      pr: this.store.mutedPullRequest(prNumber)
+    }));
+
+    return [...authors, ...pullRequests];
   }
 
   private roots(): Node[] {
@@ -155,6 +209,9 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     }
     if (this.store.allPullRequests().length > 0) {
       nodes.push({ kind: 'pullRequestsHeader' });
+    }
+    if (this.mutedNodes().length > 0) {
+      nodes.push({ kind: 'mutedHeader' });
     }
 
     return nodes;
@@ -363,6 +420,69 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
       title: 'Compare',
       arguments: [{ prNumber: node.pr.number, path: node.path }]
     };
+    return item;
+  }
+
+  // --- Muted -----------------------------------------------------------------------------
+
+  private mutedHeaderItem(): vscode.TreeItem {
+    const rows = this.mutedNodes();
+    const authors = rows.filter((node) => node.kind === 'mutedAuthor').length;
+    const pullRequests = rows.length - authors;
+
+    const item = new vscode.TreeItem('Muted', vscode.TreeItemCollapsibleState.Collapsed);
+    const parts: string[] = [];
+    if (authors > 0) parts.push(`${authors} ${authors === 1 ? 'author' : 'authors'}`);
+    if (pullRequests > 0) {
+      parts.push(`${pullRequests} pull ${pullRequests === 1 ? 'request' : 'requests'}`);
+    }
+    item.description = parts.join(' · ');
+    item.iconPath = new vscode.ThemeIcon('bell-slash', new vscode.ThemeColor('disabledForeground'));
+    item.tooltip = new vscode.MarkdownString(
+      'Work GitRay has been told to leave out.\n\nMuting applies to open pull requests only — anything that has already merged still shows as mainline drift, because your next rebase does not care who you muted.'
+    );
+    item.contextValue = 'gitray.muted';
+    return item;
+  }
+
+  /**
+   * One muted pull request.
+   *
+   * The number is always known; the pull request behind it often is not. It may have
+   * merged, or fallen past `maxPullRequests`, or `gh` may simply be unreachable this
+   * session — so the row states what it knows rather than guessing which of those happened.
+   * Unmuting works either way, which is the point of showing the row at all.
+   */
+  private mutedPullRequestItem(prNumber: number, pr: PullRequest | undefined): vscode.TreeItem {
+    const item = new vscode.TreeItem(
+      pr ? pr.title : `#${prNumber}`,
+      vscode.TreeItemCollapsibleState.None
+    );
+    item.description = pr ? `#${prNumber} · ${pr.author}` : 'not in the open list';
+    item.iconPath = new vscode.ThemeIcon(
+      'git-pull-request',
+      new vscode.ThemeColor('disabledForeground')
+    );
+    item.tooltip = new vscode.MarkdownString(
+      pr
+        ? `**#${prNumber} · ${escapeMarkdown(pr.title)}**\n\n${escapeMarkdown(pr.author)} · \`${codeSpan(pr.headRefName)}\`\n\nMuted, so it is left out of every other surface.`
+        : `**#${prNumber} is muted.**\n\nGitRay is not tracking it right now — it may have closed, it may be past \`gitray.maxPullRequests\`, or GitHub may be unreachable. Unmuting it is safe either way.`
+    );
+    item.contextValue = 'gitray.mutedPr';
+    return item;
+  }
+
+  private mutedAuthorItem(author: string, hiding: number): vscode.TreeItem {
+    const item = new vscode.TreeItem(author, vscode.TreeItemCollapsibleState.None);
+    item.description =
+      hiding > 0
+        ? `${hiding} open pull ${hiding === 1 ? 'request' : 'requests'}`
+        : 'nothing open right now';
+    item.iconPath = new vscode.ThemeIcon('account', new vscode.ThemeColor('disabledForeground'));
+    item.tooltip = new vscode.MarkdownString(
+      `**${escapeMarkdown(author)} is muted.**\n\nTheir open pull requests are left out of every surface. Anything of theirs that has already merged still shows as mainline drift.`
+    );
+    item.contextValue = 'gitray.mutedAuthor';
     return item;
   }
 

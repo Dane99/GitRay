@@ -81,9 +81,8 @@ Two things are deliberately different:
   own edits — as a near miss or a collision, never as texture.
 - **It keeps working when the rest of GitRay cannot.** Drift is plain git, so it survives a
   missing `gh`, an expired login, and a flight with no wifi.
-- **Muting does not apply.** `gitray.mutedAuthors` and `gitray.mutedPullRequests` hide open
-  pull requests. Once something has merged it is in your future regardless of who wrote it,
-  so drift ignores both lists.
+- **Muting does not apply.** [Muting](#muting) hides open pull requests. Once something has
+  merged it is in your future regardless of who wrote it, so drift ignores both lists.
 
 The mainline is re-read when a pull request leaves the open list — that *is* the merge
 event — and otherwise at most every five minutes, which covers a direct push to `main`.
@@ -158,7 +157,8 @@ ambient → collisions only → off from the command palette.
   sparse end-of-line annotation on collisions and on the region under your cursor.
   `Alt+F8` / `Shift+Alt+F8` walk between collisions across the whole branch.
 - **GitRay sidebar** — `main has moved under you` when the mainline is ahead, then
-  *Collisions* (hidden entirely when empty), then every open pull request with its files.
+  *Collisions* (hidden entirely when empty), then every open pull request with its files,
+  and finally *Muted* — collapsed, and only when something is muted.
 - **Explorer badges** — collaborator count per file, `↧` when something that already merged
   touches it, or `⟂` when either collides with you. Folders inherit the badge, so a
   collapsed tree still shows where the activity is.
@@ -170,6 +170,22 @@ ambient → collisions only → off from the command palette.
   *Lanes* shows each pull request as a row of file blocks sized by change volume.
 - **Compare** — open a real VS Code diff of a collaborator's version of a file, or the
   mainline's, against yours — served from the local ref.
+
+### Muting
+
+Mute a pull request from its row in the sidebar, from its hover card, or with `GitRay: Mute
+Pull Request`; mute a person with `GitRay: Mute Author` or from the context menu of any of
+their rows.
+
+Everything muted collects in the **Muted** section at the bottom of the sidebar — collapsed,
+and absent entirely when there is nothing in it — with an inline button to unmute each
+entry. Muted pull requests keep their title and author there, so the row can be judged on
+its own; a number GitRay is no longer tracking, because its pull request merged months ago,
+still gets a row rather than being stranded in your settings. `GitRay: Unmute All Pull
+Requests and Authors` clears both lists at once.
+
+Muting applies to open pull requests only. Once something has merged it is in your future
+regardless of who wrote it, so mainline drift ignores both lists.
 
 ## Requirements
 
@@ -246,7 +262,7 @@ minutes if the remote is unreachable.
 | `gitray.fetchPullRequestRefs` | `true` | Fetch pull request heads into `refs/gitray/*` so indicators can be line-level. Never merges, rebases, or checks anything out. |
 | `gitray.mainline.trackDrift` | `true` | Flag work that already merged into the mainline and touches your lines. See [When the pull request has already merged](#when-the-pull-request-has-already-merged). |
 | `gitray.mainline.branch` | `""` | Branch to treat as the mainline. Empty means the remote's default branch, falling back to whatever your open pull requests target. |
-| `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. Applies to open pull requests only — muting does not suppress mainline drift, since your next rebase does not care who you muted. |
+| `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. Usually written for you by the mute commands and reviewable in the sidebar's [Muted](#muting) section. Applies to open pull requests only — muting does not suppress mainline drift, since your next rebase does not care who you muted. |
 | `gitray.ignoreGlobs` | lockfiles, `dist/**`, minified assets | Files matching these globs never get indicators. |
 | `gitray.maxRegionsPerFile` | `400` | Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator. |
 

@@ -19,6 +19,7 @@ export interface Config {
   /** Empty means "detect it", which is what almost everyone should leave it as. */
   mainlineBranch: string;
   mutedPullRequests: number[];
+  /** As the user wrote them. Compare with `isMutedAuthor`, never with `includes`. */
   mutedAuthors: string[];
   ignoreGlobs: string[];
   maxRegionsPerFile: number;
@@ -38,10 +39,23 @@ export function readConfig(scope?: vscode.Uri): Config {
     trackMainlineDrift: raw.get<boolean>('mainline.trackDrift', true),
     mainlineBranch: raw.get<string>('mainline.branch', '').trim(),
     mutedPullRequests: raw.get<number[]>('mutedPullRequests', []),
-    mutedAuthors: raw.get<string[]>('mutedAuthors', []).map((a) => a.toLowerCase()),
+    mutedAuthors: raw.get<string[]>('mutedAuthors', []),
     ignoreGlobs: raw.get<string[]>('ignoreGlobs', []),
     maxRegionsPerFile: raw.get<number>('maxRegionsPerFile', 400)
   };
+}
+
+/**
+ * Is this author muted?
+ *
+ * GitHub logins are case-insensitive, but the setting is hand-editable and the "Mute
+ * Author" command writes back whatever casing GitHub reported. Normalizing at the one
+ * comparison point keeps the stored list readable while treating a login as the same
+ * person however it was typed — including in the tree row that offers to unmute them.
+ */
+export function isMutedAuthor(config: Config, author: string): boolean {
+  const wanted = author.toLowerCase();
+  return config.mutedAuthors.some((muted) => muted.toLowerCase() === wanted);
 }
 
 export async function updateSetting<T>(

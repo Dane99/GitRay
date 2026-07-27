@@ -37,6 +37,13 @@ interface StatusBarRecord {
 export interface VscodeStub {
   api: Record<string, unknown>;
   context: Record<string, unknown>;
+  /**
+   * Settings written by `update`, keyed by their full id, over the manifest defaults.
+   *
+   * Tests seed this to stand in for a user's settings.json, and read it back to assert on
+   * what a command wrote. Writes fire `onDidChangeConfiguration`, the way a real host does.
+   */
+  settings: Record<string, unknown>;
   registeredCommands: Map<string, (...args: unknown[]) => unknown>;
   treeViews: string[];
   statusBarItems: StatusBarRecord[];
@@ -59,6 +66,7 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
   const state: VscodeStub = {
     api: {},
     context: {},
+    settings: {},
     registeredCommands: new Map(),
     treeViews: [],
     statusBarItems: [],
@@ -83,6 +91,10 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
 
   const noopDisposable = () => new Disposable();
 
+  interface ConfigurationChangeEvent {
+    affectsConfiguration(section: string): boolean;
+  }
+
   class EventEmitter<T> {
     private listeners: ((value: T) => void)[] = [];
     readonly event = (listener: (value: T) => void): Disposable => {
@@ -98,6 +110,8 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
       this.listeners = [];
     }
   }
+
+  const configurationChanged = new EventEmitter<ConfigurationChangeEvent>();
 
   /** Minimal Uri: enough for path round-tripping and scheme checks. */
   class Uri {
@@ -327,9 +341,19 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
       getConfiguration: (section: string) => ({
         get: (key: string, fallback?: unknown) => {
           const full = section ? `${section}.${key}` : key;
+          if (full in state.settings) return state.settings[full];
           return full in settingDefaults ? settingDefaults[full] : fallback;
         },
-        update: async () => {}
+        // Writes are real, and they announce themselves. A no-op `update` would let a
+        // command claim to have muted something while every later `get` said otherwise.
+        update: async (key: string, value: unknown) => {
+          const full = section ? `${section}.${key}` : key;
+          state.settings[full] = value;
+          configurationChanged.fire({
+            affectsConfiguration: (queried: string) =>
+              full === queried || full.startsWith(`${queried}.`)
+          });
+        }
       }),
 
       createFileSystemWatcher: () => ({
@@ -347,7 +371,8 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
       onDidSaveTextDocument: () => new Disposable(),
       onDidChangeTextDocument: () => new Disposable(),
       onDidCloseTextDocument: () => new Disposable(),
-      onDidChangeConfiguration: () => new Disposable(),
+      onDidChangeConfiguration: (listener: (event: ConfigurationChangeEvent) => void) =>
+        configurationChanged.event(listener),
       onDidChangeWorkspaceFolders: () => new Disposable(),
 
       openTextDocument: async () => ({ getText: () => '', version: 1, lineCount: 0 }),
