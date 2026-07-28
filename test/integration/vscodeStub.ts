@@ -6,9 +6,9 @@
  * the extension really sees at runtime.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, sep, normalize, dirname } from 'node:path';
+import { join, sep, normalize, dirname, basename } from 'node:path';
 
 /**
  * Locate the extension root by walking up to the nearest package.json.
@@ -32,6 +32,14 @@ interface StatusBarRecord {
   text: string;
   tooltipHistory: unknown[];
   disposed: boolean;
+  /**
+   * Whether the item is currently on screen.
+   *
+   * Worth recording because hiding is how this surface fails invisibly: an item that never
+   * shows looks exactly like an item with nothing to report, and no assertion on `text`
+   * can tell the two apart.
+   */
+  visible: boolean;
 }
 
 export interface VscodeStub {
@@ -44,6 +52,13 @@ export interface VscodeStub {
    * what a command wrote. Writes fire `onDidChangeConfiguration`, the way a real host does.
    */
   settings: Record<string, unknown>;
+  /**
+   * Settings written to `ConfigurationTarget.WorkspaceFolder`, keyed by folder path.
+   *
+   * The point of the separation: a mute belongs to the repository it was made in, and a
+   * test can only prove that by checking it did *not* land in the shared list above.
+   */
+  folderSettings: Record<string, Record<string, unknown>>;
   registeredCommands: Map<string, (...args: unknown[]) => unknown>;
   /** What `vscode.authentication.getSession` hands back. Undefined means "never signed in". */
   githubSession: { accessToken: string; account: { label: string } } | undefined;
@@ -53,11 +68,34 @@ export interface VscodeStub {
   statusBarItems: StatusBarRecord[];
   contentProviderSchemes: string[];
   fileDecorationProviders: number;
+  /**
+   * Every file system watcher created, by the path it watches.
+   *
+   * The head watcher is created once per session and nowhere else, which makes this the
+   * cheapest way to count how many repositories are genuinely attached.
+   */
+  watchedPatterns: { base: string; pattern: string; disposed: boolean }[];
+  /**
+   * Panels handed to the webview serializer for restore.
+   *
+   * `disposed` is the interesting field: an extension that gives up on a restore throws
+   * the panel away, and from the user's side that is a Radar tab vanishing on reload.
+   */
+  restoredPanels: { disposed: boolean; title: string }[];
+  /** The last value published for each `setContext` key. */
+  contextKeys: Record<string, unknown>;
   errors: string[];
   disposedCount: number;
+  /** Replace the folder list and fire `onDidChangeWorkspaceFolders`, as the host does. */
+  setWorkspaceFolders(roots: string[]): void;
 }
 
-export function makeVscodeStub(repoRoot: string): VscodeStub {
+/**
+ * @param roots One workspace folder per path, in order. Several of them is what a
+ *   multi-root workspace is, and it is the only way to exercise the folder-scoped
+ *   configuration target and the per-repository lookups above it.
+ */
+export function makeVscodeStub(...roots: string[]): VscodeStub {
   const projectRoot = findProjectRoot();
   const manifest = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
   const settingDefaults: Record<string, unknown> = {};
@@ -71,6 +109,7 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
     api: {},
     context: {},
     settings: {},
+    folderSettings: {},
     registeredCommands: new Map(),
     githubSession: undefined,
     sessionRequests: [],
@@ -78,8 +117,13 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
     statusBarItems: [],
     contentProviderSchemes: [],
     fileDecorationProviders: 0,
+    watchedPatterns: [],
+    restoredPanels: [],
+    contextKeys: {},
     errors: [],
-    disposedCount: 0
+    disposedCount: 0,
+    // Replaced below, once the Uri class and the emitter it needs exist.
+    setWorkspaceFolders: () => {}
   };
 
   class Disposable {
@@ -118,6 +162,7 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
   }
 
   const configurationChanged = new EventEmitter<ConfigurationChangeEvent>();
+  const workspaceFoldersChanged = new EventEmitter<void>();
 
   /** Minimal Uri: enough for path round-tripping and scheme checks. */
   class Uri {
@@ -223,6 +268,43 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
     }
   }
 
+  /**
+   * A webview panel as the host hands one back for restore.
+   *
+   * Reports itself hidden, which is what a restored-but-not-focused panel is, so the
+   * payload push short-circuits and no message plumbing is needed here.
+   */
+  function makeWebviewPanel() {
+    const record = { disposed: false, title: '' };
+    state.restoredPanels.push(record);
+
+    return {
+      viewType: 'gitray.radar',
+      visible: false,
+      active: false,
+      iconPath: undefined as unknown,
+      get title() {
+        return record.title;
+      },
+      set title(value: string) {
+        record.title = value;
+      },
+      webview: {
+        html: '',
+        cspSource: 'vscode-webview:',
+        asWebviewUri: (uri: unknown) => uri,
+        postMessage: async () => true,
+        onDidReceiveMessage: () => new Disposable()
+      },
+      onDidDispose: () => new Disposable(),
+      reveal: () => {},
+      dispose: () => {
+        record.disposed = true;
+        state.disposedCount++;
+      }
+    };
+  }
+
   const outputChannel = {
     trace: () => {},
     debug: () => {},
@@ -288,7 +370,12 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
       },
 
       createStatusBarItem: () => {
-        const record: StatusBarRecord = { text: '', tooltipHistory: [], disposed: false };
+        const record: StatusBarRecord = {
+          text: '',
+          tooltipHistory: [],
+          disposed: false,
+          visible: false
+        };
         state.statusBarItems.push(record);
         return {
           name: '',
@@ -303,8 +390,12 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
             record.tooltipHistory.push(value);
           },
           backgroundColor: undefined,
-          show: () => {},
-          hide: () => {},
+          show: () => {
+            record.visible = true;
+          },
+          hide: () => {
+            record.visible = false;
+          },
           dispose: () => {
             record.disposed = true;
             state.disposedCount++;
@@ -320,7 +411,22 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
       createWebviewPanel: () => {
         throw new Error('createWebviewPanel is not exercised by the activation test');
       },
-      registerWebviewPanelSerializer: noopDisposable,
+
+      /**
+       * Registering a serializer immediately hands back the panels to restore.
+       *
+       * This is the timing that matters, and it is why it is modelled rather than stubbed
+       * out: the real host calls the deserializer as soon as the serializer is registered,
+       * which is *before* activation has finished discovering repositories. A serializer
+       * that decides anything from the session list at that moment finds it empty.
+       */
+      registerWebviewPanelSerializer: (
+        _viewType: string,
+        serializer?: { deserializeWebviewPanel(panel: unknown, state: unknown): unknown }
+      ) => {
+        if (serializer) void serializer.deserializeWebviewPanel(makeWebviewPanel(), undefined);
+        return new Disposable();
+      },
       registerFileDecorationProvider: () => {
         state.fileDecorationProviders++;
         return new Disposable();
@@ -341,33 +447,67 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
     },
 
     workspace: {
-      workspaceFolders: [{ uri: Uri.file(repoRoot), name: 'test', index: 0 }],
+      workspaceFolders: roots.map((root, index) => ({
+        uri: Uri.file(root),
+        name: basename(root),
+        index
+      })),
       textDocuments: [] as unknown[],
 
-      getConfiguration: (section: string) => ({
-        get: (key: string, fallback?: unknown) => {
-          const full = section ? `${section}.${key}` : key;
-          if (full in state.settings) return state.settings[full];
-          return full in settingDefaults ? settingDefaults[full] : fallback;
-        },
-        // Writes are real, and they announce themselves. A no-op `update` would let a
-        // command claim to have muted something while every later `get` said otherwise.
-        update: async (key: string, value: unknown) => {
-          const full = section ? `${section}.${key}` : key;
-          state.settings[full] = value;
-          configurationChanged.fire({
-            affectsConfiguration: (queried: string) =>
-              full === queried || full.startsWith(`${queried}.`)
-          });
-        }
-      }),
+      /**
+       * Settings, with folder overrides where a scope asks for them.
+       *
+       * Faithful on the one point that matters for multi-root: a value written for a
+       * folder is visible to that folder and to nobody else. A stub that ignored the
+       * scope would let a mute leak across repositories and call the test green.
+       */
+      getConfiguration: (section: string, scope?: { fsPath?: string }) => {
+        const folder = scope?.fsPath;
+        const id = (key: string) => (section ? `${section}.${key}` : key);
 
-      createFileSystemWatcher: () => ({
-        onDidChange: () => new Disposable(),
-        onDidCreate: () => new Disposable(),
-        onDidDelete: () => new Disposable(),
-        dispose: () => state.disposedCount++
-      }),
+        return {
+          get: (key: string, fallback?: unknown) => {
+            const full = id(key);
+            const scoped = folder ? state.folderSettings[folder]?.[full] : undefined;
+            if (scoped !== undefined) return scoped;
+            if (full in state.settings) return state.settings[full];
+            return full in settingDefaults ? settingDefaults[full] : fallback;
+          },
+          // Writes are real, and they announce themselves. A no-op `update` would let a
+          // command claim to have muted something while every later `get` said otherwise.
+          update: async (key: string, value: unknown, target?: number) => {
+            const full = id(key);
+            if (target === 3 && folder) {
+              state.folderSettings[folder] ??= {};
+              state.folderSettings[folder][full] = value;
+            } else {
+              state.settings[full] = value;
+            }
+            configurationChanged.fire({
+              affectsConfiguration: (queried: string) =>
+                full === queried || full.startsWith(`${queried}.`)
+            });
+          }
+        };
+      },
+
+      createFileSystemWatcher: (pattern: { base?: { fsPath?: string }; pattern?: string }) => {
+        const record = {
+          base: pattern?.base?.fsPath ?? '',
+          pattern: pattern?.pattern ?? '',
+          disposed: false
+        };
+        state.watchedPatterns.push(record);
+        return {
+          onDidChange: () => new Disposable(),
+          onDidCreate: () => new Disposable(),
+          onDidDelete: () => new Disposable(),
+          dispose: () => {
+            record.disposed = true;
+            state.disposedCount++;
+          }
+        };
+      },
 
       registerTextDocumentContentProvider: (scheme: string) => {
         state.contentProviderSchemes.push(scheme);
@@ -379,12 +519,14 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
       onDidCloseTextDocument: () => new Disposable(),
       onDidChangeConfiguration: (listener: (event: ConfigurationChangeEvent) => void) =>
         configurationChanged.event(listener),
-      onDidChangeWorkspaceFolders: () => new Disposable(),
+      onDidChangeWorkspaceFolders: (listener: () => void) =>
+        workspaceFoldersChanged.event(listener),
 
       openTextDocument: async () => ({ getText: () => '', version: 1, lineCount: 0 }),
 
       fs: {
-        readFile: async (uri: { fsPath: string }) => new Uint8Array(await readFile(uri.fsPath))
+        readFile: async (uri: { fsPath: string }) => new Uint8Array(await readFile(uri.fsPath)),
+        stat: async (uri: { fsPath: string }) => ({ mtime: statSync(uri.fsPath).mtimeMs })
       }
     },
 
@@ -393,7 +535,14 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
         state.registeredCommands.set(name, handler);
         return new Disposable(() => state.registeredCommands.delete(name));
       },
-      executeCommand: async () => undefined
+      executeCommand: async (command: string, ...args: unknown[]) => {
+        // `setContext` is how the sidebar chooses its welcome content, so what it publishes
+        // is observable behaviour rather than an implementation detail.
+        if (command === 'setContext' && typeof args[0] === 'string') {
+          state.contextKeys[args[0]] = args[1];
+        }
+        return undefined;
+      }
     },
 
     env: {
@@ -426,6 +575,14 @@ export function makeVscodeStub(repoRoot: string): VscodeStub {
   };
 
   state.api = api as unknown as Record<string, unknown>;
+  state.setWorkspaceFolders = (next: string[]) => {
+    api.workspace.workspaceFolders = next.map((root, index) => ({
+      uri: Uri.file(root),
+      name: basename(root),
+      index
+    }));
+    workspaceFoldersChanged.fire();
+  };
   state.context = {
     subscriptions: [] as { dispose(): unknown }[],
     extensionUri: Uri.file(projectRoot)

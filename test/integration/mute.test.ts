@@ -88,26 +88,57 @@ const fakeScanner = {
   collisionCount: () => 0
 } as never;
 
+const noopEvent = () => ({ dispose: () => {} });
+
+/**
+ * A single-repository workspace, which is what every scenario below is about.
+ *
+ * The multi-root behaviour these fakes stand in for has its own test; here they exist so
+ * mute can be exercised without a real repository behind it.
+ */
+function fakeWorkspace(session: unknown) {
+  return {
+    ready: true,
+    size: 1,
+    all: () => [session],
+    only: () => session,
+    active: () => session,
+    sessionFor: () => session,
+    sessionAt: (root: string | undefined) => (root === ROOT ? session : undefined),
+    collisionCount: () => 0,
+    onDidChange: noopEvent
+  } as never;
+}
+
 /** Assemble the pieces a mute scenario needs, wired the way the extension wires them. */
 function harness() {
   const store = new Store();
   const repository = fakeRepository();
   const requests: string[] = [];
 
-  const tree = new PulseTreeProvider(repository, store, fakeScanner);
-  const disposables = registerCommands({
-    extensionUri: (stub.api.Uri as { file(p: string): never }).file(ROOT),
+  const session = {
     repository,
     store,
-    analyzer: { mergeBaseFor: async () => undefined } as never,
     scanner: fakeScanner,
-    controller: { refreshVisible: () => {}, analysisFor: () => undefined } as never,
+    analyzer: { mergeBaseFor: async () => undefined },
+    engine: {},
+    controller: { refreshVisible: () => {}, analysisFor: () => undefined },
     scheduler: {
       request: async (reason: string) => {
         requests.push(reason);
       }
-    } as never,
-    engine: {} as never
+    },
+    id: ROOT,
+    label: 'repo',
+    config: () => readConfig((repository as { folder: { uri: never } }).folder.uri),
+    onDidChange: noopEvent
+  };
+
+  const workspace = fakeWorkspace(session);
+  const tree = new PulseTreeProvider(workspace);
+  const disposables = registerCommands({
+    extensionUri: (stub.api.Uri as { file(p: string): never }).file(ROOT),
+    workspace
   });
 
   const run = async (command: string, arg?: unknown): Promise<void> => {

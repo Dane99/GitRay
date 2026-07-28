@@ -12,15 +12,17 @@
  * gets the least attention a section can get while still existing. It has to exist,
  * though: muting is one click and, without somewhere to see the result, taking it back
  * meant hand-editing settings.json.
+ *
+ * With more than one repository attached, that whole arrangement moves down a level and
+ * each repository gets a row of its own. A single repository keeps the flat shape, because
+ * a tree with one permanently-expanded root node is a wasted indent.
  */
 
 import * as vscode from 'vscode';
 import type { FileAnalysis, PullRequest, ResolvedRegion } from '../core/types.js';
 import { behindMainline, prNumberOf } from '../core/types.js';
-import { readConfig } from '../core/config.js';
-import type { Store } from '../model/store.js';
-import type { CollisionScanner } from '../sync/scanner.js';
-import type { Repository } from '../providers/repository.js';
+import type { RepositorySession } from '../session.js';
+import type { Workspace } from '../workspace.js';
 import { hueColorId } from '../model/palette.js';
 import { codeSpan, escapeMarkdown, regionHeadline, relativeTime } from './hover.js';
 
@@ -31,9 +33,17 @@ import { codeSpan, escapeMarkdown, regionHeadline, relativeTime } from './hover.
  * either `content` or a genuine `empty`, so the startup message can never be the last
  * thing a working install shows.
  */
-type ViewState = 'starting' | 'empty' | 'content';
+type ViewState = 'starting' | 'empty' | 'noRepo' | 'content';
 
-type Node =
+/**
+ * Every row knows which repository it came from.
+ *
+ * Not a convenience: it is what the commands read to act on the right repository when a
+ * context menu is used, and without it a menu item clicked in one folder would quietly
+ * run against another.
+ */
+type Node = { session: RepositorySession } & (
+  | { kind: 'repository' }
   | { kind: 'status' }
   | { kind: 'mainline' }
   | { kind: 'collisionsHeader' }
@@ -46,7 +56,8 @@ type Node =
   // `prNumber` and `author` are named to match what the commands read off a context-menu
   // argument, so the inline unmute buttons act on the row they were clicked from.
   | { kind: 'mutedPullRequest'; prNumber: number; pr: PullRequest | undefined }
-  | { kind: 'mutedAuthor'; author: string; hiding: number };
+  | { kind: 'mutedAuthor'; author: string; hiding: number }
+);
 
 export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.Disposable {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<Node | undefined>();
@@ -54,15 +65,10 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
   private disposables: vscode.Disposable[] = [];
   private viewState: ViewState | undefined;
 
-  constructor(
-    private readonly repository: Repository,
-    private readonly store: Store,
-    private readonly scanner: CollisionScanner
-  ) {
+  constructor(private readonly workspace: Workspace) {
     this.disposables.push(
       this.onDidChangeTreeDataEmitter,
-      this.store.onDidChange(() => this.refresh()),
-      this.scanner.onDidChange(() => this.refresh()),
+      this.workspace.onDidChange(() => this.refresh()),
       // The Muted section reads the settings directly, so it is the one part of this view
       // that can change without the store changing — someone editing settings.json by hand,
       // or a mute applied while gh is unreachable and no sync is landing.
@@ -91,38 +97,48 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
    * disagree about whether the view is empty.
    */
   private publishViewState(): void {
-    const state: ViewState =
-      this.roots().length > 0
-        ? 'content'
-        : this.store.currentStatus().lastSync === undefined
-          ? 'starting'
-          : 'empty';
-
+    const state = this.currentViewState();
     if (state === this.viewState) return;
     this.viewState = state;
     void vscode.commands.executeCommand('setContext', 'gitray.view', state);
   }
 
+  private currentViewState(): ViewState {
+    // Probing a folder costs a git subprocess, and "we have not looked yet" must not be
+    // shown as "there is nothing here" for however long that takes.
+    if (!this.workspace.ready) return 'starting';
+
+    const sessions = this.workspace.all();
+    if (sessions.length === 0) return 'noRepo';
+    if (this.roots().length > 0) return 'content';
+
+    return sessions.every((session) => session.store.currentStatus().lastSync !== undefined)
+      ? 'empty'
+      : 'starting';
+  }
+
   getTreeItem(node: Node): vscode.TreeItem {
     switch (node.kind) {
+      case 'repository':
+        return this.repositoryItem(node.session);
       case 'status':
-        return this.statusItem();
+        return this.statusItem(node.session);
       case 'mainline':
-        return this.mainlineItem();
+        return this.mainlineItem(node.session);
       case 'collisionsHeader':
-        return this.collisionsHeaderItem();
+        return this.collisionsHeaderItem(node.session);
       case 'collisionFile':
-        return this.collisionFileItem(node.analysis);
+        return this.collisionFileItem(node.session, node.analysis);
       case 'collisionRegion':
-        return this.collisionRegionItem(node.analysis, node.region);
+        return this.collisionRegionItem(node.session, node.analysis, node.region);
       case 'pullRequestsHeader':
-        return this.pullRequestsHeaderItem();
+        return this.pullRequestsHeaderItem(node.session);
       case 'pullRequest':
-        return this.pullRequestItem(node.pr);
+        return this.pullRequestItem(node.session, node.pr);
       case 'pullRequestFile':
-        return this.pullRequestFileItem(node);
+        return this.pullRequestFileItem(node.session, node);
       case 'mutedHeader':
-        return this.mutedHeaderItem();
+        return this.mutedHeaderItem(node.session);
       case 'mutedPullRequest':
         return this.mutedPullRequestItem(node.prNumber, node.pr);
       case 'mutedAuthor':
@@ -132,18 +148,29 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
 
   getChildren(node?: Node): Node[] {
     if (!node) return this.roots();
+    const { session } = node;
 
     switch (node.kind) {
+      case 'repository':
+        return this.sections(session);
+
       case 'collisionsHeader':
-        return this.scanner.hotFiles().map((analysis) => ({ kind: 'collisionFile', analysis }));
+        return session.scanner
+          .hotFiles()
+          .map((analysis) => ({ kind: 'collisionFile', session, analysis }));
 
       case 'collisionFile':
         return node.analysis.regions
           .filter((region) => region.severity !== 'ambient')
-          .map((region) => ({ kind: 'collisionRegion', analysis: node.analysis, region }));
+          .map((region) => ({
+            kind: 'collisionRegion',
+            session,
+            analysis: node.analysis,
+            region
+          }));
 
       case 'pullRequestsHeader':
-        return this.store.allPullRequests().map((pr) => ({ kind: 'pullRequest', pr }));
+        return session.store.allPullRequests().map((pr) => ({ kind: 'pullRequest', session, pr }));
 
       case 'pullRequest':
         return node.pr.files
@@ -151,6 +178,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
           .sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions))
           .map((file) => ({
             kind: 'pullRequestFile',
+            session,
             pr: node.pr,
             path: file.path,
             additions: file.additions,
@@ -158,7 +186,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
           }));
 
       case 'mutedHeader':
-        return this.mutedNodes();
+        return this.mutedNodes(session);
 
       default:
         return [];
@@ -174,50 +202,104 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
    * silently keep filtering. The store is consulted only to put a title and a face to the
    * rows it happens to know about.
    */
-  private mutedNodes(): Node[] {
-    const config = readConfig(this.repository.folder.uri);
+  private mutedNodes(session: RepositorySession): Node[] {
+    const config = session.config();
 
     const authors: Node[] = config.mutedAuthors.map((author) => ({
       kind: 'mutedAuthor',
+      session,
       author,
-      hiding: this.store.mutedPullRequestsBy(author).length
+      hiding: session.store.mutedPullRequestsBy(author).length
     }));
 
     const pullRequests: Node[] = config.mutedPullRequests.map((prNumber) => ({
       kind: 'mutedPullRequest',
+      session,
       prNumber,
-      pr: this.store.mutedPullRequest(prNumber)
+      pr: session.store.mutedPullRequest(prNumber)
     }));
 
     return [...authors, ...pullRequests];
   }
 
   private roots(): Node[] {
+    const sessions = this.workspace.all();
+    if (sessions.length === 1) return this.sections(sessions[0]);
+
+    // Quiet repositories keep their row, so the list does not reshuffle as work comes and
+    // goes and you can always see what GitRay is actually watching. When none of them has
+    // anything to say the view empties out completely and the welcome content takes over,
+    // exactly as it does for a single repository — a column of "nothing to report" rows is
+    // not worth the space.
+    const anything = sessions.some((session) => this.sections(session).length > 0);
+    if (!anything) return [];
+
+    return sessions.map((session) => ({ kind: 'repository', session }));
+  }
+
+  /** One repository's sections, in the order they deserve attention. */
+  private sections(session: RepositorySession): Node[] {
     const nodes: Node[] = [];
-    const status = this.store.currentStatus();
+    const status = session.store.currentStatus();
 
     if (status.state === 'degraded' || status.state === 'error') {
-      nodes.push({ kind: 'status' });
+      nodes.push({ kind: 'status', session });
     }
     // Above the collisions on purpose. What has already landed is the more urgent of the
     // two, and it is also the row that keeps this view from emptying out on a quiet day.
-    if (this.store.hasMainlineDrift()) {
-      nodes.push({ kind: 'mainline' });
+    if (session.store.hasMainlineDrift()) {
+      nodes.push({ kind: 'mainline', session });
     }
-    if (this.scanner.hotFiles().length > 0) {
-      nodes.push({ kind: 'collisionsHeader' });
+    if (session.scanner.hotFiles().length > 0) {
+      nodes.push({ kind: 'collisionsHeader', session });
     }
-    if (this.store.allPullRequests().length > 0) {
-      nodes.push({ kind: 'pullRequestsHeader' });
+    if (session.store.allPullRequests().length > 0) {
+      nodes.push({ kind: 'pullRequestsHeader', session });
     }
-    if (this.mutedNodes().length > 0) {
-      nodes.push({ kind: 'mutedHeader' });
+    if (this.mutedNodes(session).length > 0) {
+      nodes.push({ kind: 'mutedHeader', session });
     }
 
     return nodes;
   }
 
   // --- Item construction ---------------------------------------------------------------
+
+  /**
+   * One repository's row, shown only when there is more than one.
+   *
+   * The description is the same three counts the status bar totals up — open, behind,
+   * colliding — so the row that contributed a number can be found by reading down the
+   * list rather than by expanding each one in turn.
+   */
+  private repositoryItem(session: RepositorySession): vscode.TreeItem {
+    const open = session.store.allPullRequests().length;
+    const collisions = session.scanner.collisionCount();
+    const behind = behindMainline(session.store.mainline());
+    const status = session.store.currentStatus();
+    const degraded = status.state === 'degraded' || status.state === 'error';
+
+    const item = new vscode.TreeItem(session.label, vscode.TreeItemCollapsibleState.Expanded);
+
+    const parts: string[] = [];
+    if (open > 0) parts.push(`${open} open`);
+    if (behind.count > 0) parts.push(`${behind.display} behind`);
+    if (collisions > 0) parts.push(`⟂ ${collisions}`);
+    item.description = parts.join(' · ') || (degraded ? 'unavailable' : 'nothing to report');
+
+    item.iconPath =
+      collisions > 0
+        ? new vscode.ThemeIcon('repo', new vscode.ThemeColor('gitray.collisionForeground'))
+        : new vscode.ThemeIcon('repo');
+
+    const tooltip = new vscode.MarkdownString(
+      `**${escapeMarkdown(session.label)}**\n\n${escapeMarkdown(session.repository.root)}`
+    );
+    tooltip.isTrusted = false;
+    item.tooltip = tooltip;
+    item.contextValue = 'gitray.repository';
+    return item;
+  }
 
   /**
    * The degraded-state row.
@@ -227,8 +309,8 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
    * every poll would be worse than the missing feature. Being signed out is the one that
    * has a fix worth a click, so that row — and only that row — is a button.
    */
-  private statusItem(): vscode.TreeItem {
-    const status = this.store.currentStatus();
+  private statusItem(session: RepositorySession): vscode.TreeItem {
+    const status = session.store.currentStatus();
     const item = new vscode.TreeItem(
       status.message ?? 'GitRay is not fully available',
       vscode.TreeItemCollapsibleState.None
@@ -265,12 +347,12 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
    * behind is worth a line of screen space, and it is also the only thing GitRay has to say
    * on a day with nothing open, which is exactly when it used to say nothing at all.
    */
-  private mainlineItem(): vscode.TreeItem {
-    const mainline = this.store.mainline();
+  private mainlineItem(session: RepositorySession): vscode.TreeItem {
+    const mainline = session.store.mainline();
     const commits = mainline?.commits ?? [];
     const branch = mainline?.branch ?? 'main';
     const behind = behindMainline(mainline);
-    const affected = this.scanner
+    const affected = session.scanner
       .hotFiles()
       .filter((analysis) => analysis.regions.some((r) => r.origin.kind === 'mainline')).length;
 
@@ -313,9 +395,9 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     return item;
   }
 
-  private collisionsHeaderItem(): vscode.TreeItem {
-    const files = this.scanner.hotFiles();
-    const collisions = this.scanner.collisionCount();
+  private collisionsHeaderItem(session: RepositorySession): vscode.TreeItem {
+    const files = session.scanner.hotFiles();
+    const collisions = session.scanner.collisionCount();
 
     const item = new vscode.TreeItem('Collisions', vscode.TreeItemCollapsibleState.Expanded);
     item.description =
@@ -333,8 +415,11 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     return item;
   }
 
-  private collisionFileItem(analysis: FileAnalysis): vscode.TreeItem {
-    const uri = this.repository.uriFor(analysis.path);
+  private collisionFileItem(
+    session: RepositorySession,
+    analysis: FileAnalysis
+  ): vscode.TreeItem {
+    const uri = session.repository.uriFor(analysis.path);
     const collisions = analysis.regions.filter((r) => r.severity === 'collision').length;
     const nearMisses = analysis.regions.filter((r) => r.severity === 'nearMiss').length;
 
@@ -346,9 +431,13 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     return item;
   }
 
-  private collisionRegionItem(analysis: FileAnalysis, region: ResolvedRegion): vscode.TreeItem {
+  private collisionRegionItem(
+    session: RepositorySession,
+    analysis: FileAnalysis,
+    region: ResolvedRegion
+  ): vscode.TreeItem {
     const prNumber = prNumberOf(region.origin);
-    const pr = prNumber === undefined ? undefined : this.store.pullRequest(prNumber);
+    const pr = prNumber === undefined ? undefined : session.store.pullRequest(prNumber);
     const line = region.range.start + 1;
 
     const item = new vscode.TreeItem(
@@ -363,7 +452,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
         : `line ${line} · ${region.distance} away`;
     item.iconPath = new vscode.ThemeIcon(
       region.severity === 'collision' ? 'circle-filled' : 'circle-outline',
-      new vscode.ThemeColor(hueColorId(this.store.hueForRegion(region)))
+      new vscode.ThemeColor(hueColorId(session.store.hueForRegion(region)))
     );
     item.tooltip = new vscode.MarkdownString(
       `**${regionHeadline(region, pr)}**\n\n${analysis.path}:${line}`
@@ -371,14 +460,16 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     item.command = {
       command: 'gitray.revealRegion',
       title: 'Reveal',
-      arguments: [{ path: analysis.path, line: region.range.start }]
+      // The root travels with the path: a repo-relative path names a different file in
+      // every folder of a multi-root workspace, and this row knows which one it meant.
+      arguments: [{ root: session.id, path: analysis.path, line: region.range.start }]
     };
     item.contextValue = 'gitray.region';
     return item;
   }
 
-  private pullRequestsHeaderItem(): vscode.TreeItem {
-    const pullRequests = this.store.allPullRequests();
+  private pullRequestsHeaderItem(session: RepositorySession): vscode.TreeItem {
+    const pullRequests = session.store.allPullRequests();
     const authors = new Set(pullRequests.map((pr) => pr.author));
 
     const item = new vscode.TreeItem('Active pull requests', vscode.TreeItemCollapsibleState.Expanded);
@@ -388,12 +479,15 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     return item;
   }
 
-  private pullRequestItem(pr: PullRequest): vscode.TreeItem {
+  private pullRequestItem(session: RepositorySession, pr: PullRequest): vscode.TreeItem {
     const item = new vscode.TreeItem(pr.title, vscode.TreeItemCollapsibleState.Collapsed);
     item.description = `#${pr.number} · ${pr.author} · ${relativeTime(pr.updatedAt)}`;
     item.iconPath = new vscode.ThemeIcon(
       pr.isDraft ? 'git-pull-request-draft' : 'git-pull-request',
-      new vscode.ThemeColor(hueColorId(this.store.hueFor(pr.author)))
+      // Hues are assigned per repository, so the same person can read as a different colour
+      // in two folders. That is the right trade: a hue's job is to tell collaborators apart
+      // within one repository, and a window-wide palette would run out far sooner.
+      new vscode.ThemeColor(hueColorId(session.store.hueFor(pr.author)))
     );
     item.tooltip = new vscode.MarkdownString(
       [
@@ -410,13 +504,16 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     return item;
   }
 
-  private pullRequestFileItem(node: {
-    pr: PullRequest;
-    path: string;
-    additions: number;
-    deletions: number;
-  }): vscode.TreeItem {
-    const uri = this.repository.uriFor(node.path);
+  private pullRequestFileItem(
+    session: RepositorySession,
+    node: {
+      pr: PullRequest;
+      path: string;
+      additions: number;
+      deletions: number;
+    }
+  ): vscode.TreeItem {
+    const uri = session.repository.uriFor(node.path);
     const item = new vscode.TreeItem(uri, vscode.TreeItemCollapsibleState.None);
     item.description = `+${node.additions} −${node.deletions}`;
     item.resourceUri = uri;
@@ -425,15 +522,15 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
     item.command = {
       command: 'gitray.diffWithPullRequest',
       title: 'Compare',
-      arguments: [{ prNumber: node.pr.number, path: node.path }]
+      arguments: [{ root: session.id, prNumber: node.pr.number, path: node.path }]
     };
     return item;
   }
 
   // --- Muted -----------------------------------------------------------------------------
 
-  private mutedHeaderItem(): vscode.TreeItem {
-    const rows = this.mutedNodes();
+  private mutedHeaderItem(session: RepositorySession): vscode.TreeItem {
+    const rows = this.mutedNodes(session);
     const authors = rows.filter((node) => node.kind === 'mutedAuthor').length;
     const pullRequests = rows.length - authors;
 

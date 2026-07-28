@@ -68,10 +68,26 @@ export function isMutedAuthor(config: Config, author: string): boolean {
   return config.mutedAuthors.some((muted) => muted.toLowerCase() === wanted);
 }
 
+/**
+ * Write a setting back.
+ *
+ * The scope decides where it lands, and for the per-repository settings it has to: muting
+ * #5 is a statement about one repository's pull request #5, and in a multi-root workspace
+ * the workspace-level list is shared by every folder — so a mute made in one repository
+ * would silence an unrelated pull request in the next one along. Passing the folder writes
+ * it to that folder's own settings instead.
+ *
+ * With a single folder there is no folder-level target to write to, and the workspace file
+ * is that folder's `.vscode/settings.json` anyway, so the distinction does not arise.
+ */
 export async function updateSetting<T>(
   key: string,
   value: T,
-  target = vscode.ConfigurationTarget.Workspace
+  scope?: vscode.Uri
 ): Promise<void> {
-  await vscode.workspace.getConfiguration('gitray').update(key, value, target);
+  const perFolder = scope !== undefined && (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
+  const target = perFolder
+    ? vscode.ConfigurationTarget.WorkspaceFolder
+    : vscode.ConfigurationTarget.Workspace;
+  await vscode.workspace.getConfiguration('gitray', scope).update(key, value, target);
 }

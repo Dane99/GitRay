@@ -31,7 +31,7 @@ export class EditorController implements vscode.Disposable {
     private readonly store: Store,
     private readonly analyzer: Analyzer
   ) {
-    this.painter = new DecorationPainter((uri) => this.schedule(uri, 0));
+    this.painter = new DecorationPainter(repository.root, (uri) => this.schedule(uri, 0));
 
     this.disposables.push(
       this.painter,

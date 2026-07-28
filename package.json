@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -64,12 +64,12 @@
       },
       {
         "view": "gitray.pulse",
-        "contents": "Nothing to track in this repository right now.\n\nGitRay indicates work from your repository's open pull requests, and from anything that has landed on the mainline since your branch left it. Neither has anything to say at the moment.\n[Refresh](command:gitray.refresh)\n[Open settings](command:workbench.action.openSettings?%5B%22gitray%22%5D)",
+        "contents": "Nothing to track right now.\n\nGitRay indicates work from your repositories' open pull requests, and from anything that has landed on the mainline since your branch left it. Neither has anything to say at the moment.\n[Refresh](command:gitray.refresh)\n[Open settings](command:workbench.action.openSettings?%5B%22gitray%22%5D)",
         "when": "gitray.view == 'empty'"
       },
       {
         "view": "gitray.pulse",
-        "contents": "This folder is not a git repository, so GitRay has nothing to watch.",
+        "contents": "No folder in this workspace is a git repository, so GitRay has nothing to watch.",
         "when": "gitray.view == 'noRepo'"
       }
     ],
@@ -235,6 +235,26 @@
       ],
       "view/item/context": [
         {
+          "command": "gitray.refresh",
+          "when": "view == gitray.pulse && viewItem == gitray.repository",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitray.openRadar",
+          "when": "view == gitray.pulse && viewItem == gitray.repository",
+          "group": "1_gitray@1"
+        },
+        {
+          "command": "gitray.unmuteAll",
+          "when": "view == gitray.pulse && viewItem == gitray.repository",
+          "group": "1_gitray@2"
+        },
+        {
+          "command": "gitray.removeRefs",
+          "when": "view == gitray.pulse && viewItem == gitray.repository",
+          "group": "1_gitray@3"
+        },
+        {
           "command": "gitray.openPullRequest",
           "when": "view == gitray.pulse && viewItem =~ /gitray.pr/",
           "group": "inline@1"
@@ -331,22 +351,26 @@
       "properties": {
         "gitray.refreshInterval": {
           "type": "number",
+          "scope": "resource",
           "default": 60,
           "minimum": 0,
           "markdownDescription": "Seconds between refreshes. Set to `0` to refresh only manually. Polling pauses while the window is unfocused."
         },
         "gitray.includeDrafts": {
           "type": "boolean",
+          "scope": "resource",
           "default": false,
           "description": "Include draft pull requests."
         },
         "gitray.includeOwnPullRequests": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Include pull requests authored by you. Turn this off to see only what other people are changing."
         },
         "gitray.maxPullRequests": {
           "type": "number",
+          "scope": "resource",
           "default": 30,
           "minimum": 1,
           "maximum": 100,
@@ -354,6 +378,7 @@
         },
         "gitray.proximityLines": {
           "type": "number",
+          "scope": "resource",
           "default": 3,
           "minimum": 0,
           "maximum": 50,
@@ -361,6 +386,7 @@
         },
         "gitray.decorations.mode": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "ambient",
             "collisionsOnly",
@@ -376,31 +402,37 @@
         },
         "gitray.decorations.showInlineAnnotations": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Show a dim end-of-line annotation on collisions and on the region under your cursor."
         },
         "gitray.fetchPullRequestRefs": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "markdownDescription": "Fetch open pull request heads into the isolated `refs/gitray/*` namespace so line-level indicators can be computed locally. This never merges, rebases, or checks anything out. When disabled, GitRay falls back to file-level indicators only."
         },
         "gitray.remote": {
           "type": "string",
+          "scope": "resource",
           "default": "",
           "markdownDescription": "Git remote to fetch pull request heads and the mainline from, for example `upstream`. Leave empty to detect it: GitRay uses the remote pointing at whichever repository the GitHub CLI resolves, and otherwise prefers `upstream`, then `github`, then `origin` — the same order `gh` uses. Set this when you work in a fork and the pull requests live somewhere other than `origin`."
         },
         "gitray.mainline.trackDrift": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "markdownDescription": "Watch the mainline for work that landed after your branch left it, and flag the parts that touch your lines. This is what keeps a merged pull request visible: once it closes it leaves every other surface, at exactly the moment its overlap with your work stops being hypothetical and starts waiting for your next rebase."
         },
         "gitray.mainline.branch": {
           "type": "string",
+          "scope": "resource",
           "default": "",
           "markdownDescription": "Branch to treat as the mainline, for example `main` or `develop`. Leave empty to use the remote's default branch, falling back to whatever your open pull requests target."
         },
         "gitray.mutedPullRequests": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "number"
           },
@@ -409,6 +441,7 @@
         },
         "gitray.mutedAuthors": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -417,6 +450,7 @@
         },
         "gitray.ignoreGlobs": {
           "type": "array",
+          "scope": "resource",
           "items": {
             "type": "string"
           },
@@ -438,6 +472,7 @@
         },
         "gitray.maxRegionsPerFile": {
           "type": "number",
+          "scope": "resource",
           "default": 400,
           "minimum": 10,
           "description": "Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator."

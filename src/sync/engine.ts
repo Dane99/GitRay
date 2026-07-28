@@ -257,6 +257,12 @@ export class SyncEngine {
         await timed('git fetch', () =>
           this.repository.git.fetchPullRequests(missing, remote.name)
         );
+        // Say that the objects arrived. The surfaces were told about these pull requests
+        // before their heads existed locally — `setPullRequests` fires synchronously and
+        // this fetch is awaited after it — so the pass they ran had nothing to analyze
+        // against. Nothing else announces it: the status below is already `ready`, so it
+        // fires nothing, and the file would stay blank until the next poll or keystroke.
+        this.store.invalidateAll();
       } catch (error) {
         log.warn(`fetch failed: ${error instanceof Error ? error.message : String(error)}`);
         // The remote is named because it is the thing most likely to be wrong: a fork whose

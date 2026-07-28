@@ -1,21 +1,17 @@
 /**
  * Activation and wiring.
  *
- * GitRay attaches to the first workspace folder that is a git repository and builds one
- * stack of components for it. Everything is created here and disposed together, so
- * closing the folder or reloading the window leaves nothing running.
+ * GitRay attaches to every workspace folder backed by a git repository and gives each one
+ * its own session — its own store, poll loop, and collision scan. The surfaces the editor
+ * only lets an extension register once are built once, here, and read across all of them.
+ *
+ * Everything is created together and disposed together, so closing a folder or reloading
+ * the window leaves nothing running.
  */
 
 import * as vscode from 'vscode';
 import { initLog, log } from './core/log.js';
-import { readConfig } from './core/config.js';
-import { Store } from './model/store.js';
-import { Analyzer } from './model/analyzer.js';
-import { Repository } from './providers/repository.js';
-import { SyncEngine } from './sync/engine.js';
-import { Scheduler } from './sync/scheduler.js';
-import { CollisionScanner } from './sync/scanner.js';
-import { EditorController } from './ui/editorController.js';
+import { Workspace } from './workspace.js';
 import { PulseTreeProvider } from './ui/tree.js';
 import { GitRayFileDecorationProvider } from './ui/fileDecorations.js';
 import { StatusBar } from './ui/statusBar.js';
@@ -30,22 +26,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(initLog());
   log.info('GitRay activating');
 
-  const attach = async () => {
-    active?.dispose();
-    active = await build(context);
-    if (active) context.subscriptions.push(active);
-  };
-
-  await attach();
-
-  // Adding or removing a folder can change whether there is a repository to attach to.
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders(() => void attach()),
-    new vscode.Disposable(() => {
-      active?.dispose();
+  const workspace = new Workspace();
+  active = build(context, workspace);
+  context.subscriptions.push(active, {
+    dispose: () => {
       active = undefined;
-    })
+    }
+  });
+
+  // Adding or removing a folder changes which repositories there are to attach to. The
+  // surfaces above stay put; only the session set is reconciled.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => void workspace.refresh())
   );
+
+  await workspace.refresh();
 }
 
 export function deactivate(): void {
@@ -53,103 +48,66 @@ export function deactivate(): void {
   active = undefined;
 }
 
-async function build(context: vscode.ExtensionContext): Promise<vscode.Disposable | undefined> {
-  const repository = await findRepository();
-  if (!repository) {
-    log.info('no git repository in this workspace; GitRay is idle');
-    // Nothing else runs in this case, so the view's welcome content is the only place
-    // left to say why. PulseTreeProvider owns this key whenever there is a repository.
-    void vscode.commands.executeCommand('setContext', 'gitray.view', 'noRepo');
-    return undefined;
-  }
-
-  log.info(`attached to ${repository.root}`);
-
-  const store = new Store();
-  const analyzer = new Analyzer(repository.git, store, repository.remotes);
-  const engine = new SyncEngine(repository, store, analyzer);
-  const scanner = new CollisionScanner(repository, store, analyzer);
-  const scheduler = new Scheduler(engine, repository);
-  const controller = new EditorController(repository, store, analyzer);
-  const tree = new PulseTreeProvider(repository, store, scanner);
-  const fileDecorations = new GitRayFileDecorationProvider(repository, store, scanner);
-  const statusBar = new StatusBar(store, scanner);
-  const contentProvider = new PullRequestContentProvider(repository);
+function build(context: vscode.ExtensionContext, workspace: Workspace): vscode.Disposable {
+  const tree = new PulseTreeProvider(workspace);
+  const fileDecorations = new GitRayFileDecorationProvider(workspace);
+  const statusBar = new StatusBar(workspace);
+  const contentProvider = new PullRequestContentProvider(workspace);
 
   const treeView = vscode.window.createTreeView('gitray.pulse', {
     treeDataProvider: tree,
     showCollapseAll: true
   });
 
-  const commands = registerCommands({
-    extensionUri: context.extensionUri,
-    repository,
-    store,
-    analyzer,
-    scanner,
-    controller,
-    scheduler,
-    engine
-  });
+  const commands = registerCommands({ extensionUri: context.extensionUri, workspace });
 
   const serializer = vscode.window.registerWebviewPanelSerializer(RadarPanel.viewType, {
     async deserializeWebviewPanel(panel) {
-      RadarPanel.restore(panel, context.extensionUri, store, scanner, (path, line) =>
-        void openWorkspaceFile(repository, path, line)
+      // VS Code restores panels as soon as the serializer is registered, which is before
+      // the first discovery pass has spawned its first git process. Deciding anything from
+      // the session list at that moment would find it empty and throw the panel away on
+      // every reload — including in single-repository windows, where restore used to work.
+      await workspace.whenReady();
+
+      // A restored panel predates this window's session set, so it lands on whichever
+      // repository is in front of you now. There is nothing to restore it from otherwise —
+      // the folder list may well have changed between sessions.
+      //
+      // Falling back to the first repository rather than giving up: `active()` is undefined
+      // with several attached and no file focused, which is exactly the state a window is in
+      // while it is still restoring. Discarding the tab there would be the worst answer, and
+      // there is nobody to ask — the panel repaints from live data and retargets the moment
+      // Open Radar is used, so a first guess costs nothing.
+      const session = workspace.active() ?? workspace.all()[0];
+      if (!session) {
+        panel.dispose();
+        return;
+      }
+      RadarPanel.restore(panel, context.extensionUri, session, workspace.size > 1, (path, line) =>
+        void openWorkspaceFile(session.repository, path, line)
       );
     }
   });
 
-  // A sync brings new pull request data; the scan turns it into collisions against the
-  // work you have in progress. Keeping them in this order means the tree and status bar
-  // never show pull requests without their collision state catching up a moment later.
-  const rescan = store.onDidChange(() => {
-    void scanner.scan(readConfig(repository.folder.uri));
-  });
-
-  // Saving can resolve or create a collision in a file that is not open, so the scan has
-  // to run on save too, not just on sync.
-  const rescanOnSave = vscode.workspace.onDidSaveTextDocument((document) => {
-    if (repository.relativePath(document.uri)) {
-      analyzer.invalidate(repository.relativePath(document.uri) as string);
-      void scanner.scan(readConfig(repository.folder.uri));
-    }
-  });
-
-  const collisionContext = scanner.onDidChange(() => {
+  const collisionContext = workspace.onDidChange(() => {
     void vscode.commands.executeCommand(
       'setContext',
       'gitray.hasCollisions',
-      scanner.collisionCount() > 0
+      workspace.collisionCount() > 0
     );
   });
 
-  scheduler.start();
-
   return vscode.Disposable.from(
     { dispose: () => log.info('GitRay detaching') },
-    scheduler,
-    controller,
-    scanner,
     tree,
     treeView,
     fileDecorations,
     statusBar,
     contentProvider,
     serializer,
-    rescan,
-    rescanOnSave,
     collisionContext,
     ...commands,
-    store
+    // Last: the sessions own the stores every surface above reads from.
+    workspace
   );
-}
-
-/** First workspace folder backed by a git repository. */
-async function findRepository(): Promise<Repository | undefined> {
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    const repository = await Repository.discover(folder);
-    if (repository) return repository;
-  }
-  return undefined;
 }

@@ -7,34 +7,39 @@
  * `git show` and no network.
  *
  * URI shapes:
- *   gitray://pr/<number>/<path>?ref=<ref>
- *   gitray://mainline/<path>?ref=<sha>
- *   gitray://base/<path>?ref=<sha>
+ *   gitray://pr/<number>/<path>?ref=<ref>&root=<repository>
+ *   gitray://mainline/<path>?ref=<sha>&root=<repository>
+ *   gitray://base/<path>?ref=<sha>&root=<repository>
  *
  * The pull request form carries its number in the path because that is what names the tab.
  * The other two cannot: a branch may contain slashes, which would make the boundary between
  * branch and file path ambiguous, so the commit travels in the query instead and the path
  * is nothing but the file.
+ *
+ * The repository travels in the query for the same reason. A repo-relative path is only
+ * meaningful next to the root it is relative to, and in a multi-root workspace `src/app.ts`
+ * names a different file in every folder — without this, every diff would be read out of
+ * whichever repository happened to be first.
  */
 
 import * as vscode from 'vscode';
-import type { Repository } from '../providers/repository.js';
+import type { Workspace } from '../workspace.js';
 import { prRef } from '../providers/git.js';
 
 export const GITRAY_SCHEME = 'gitray';
 
-export function pullRequestFileUri(prNumber: number, path: string): vscode.Uri {
+export function pullRequestFileUri(root: string, prNumber: number, path: string): vscode.Uri {
   return vscode.Uri.from({
     scheme: GITRAY_SCHEME,
     authority: 'pr',
     path: `/${prNumber}/${path}`,
-    query: `ref=${encodeURIComponent(prRef(prNumber))}`
+    query: `ref=${encodeURIComponent(prRef(prNumber))}&root=${encodeURIComponent(root)}`
   });
 }
 
 /** The mainline's copy of a file, pinned to the commit it was analyzed against. */
-export function mainlineFileUri(tip: string, path: string): vscode.Uri {
-  return commitFileUri('mainline', tip, path);
+export function mainlineFileUri(root: string, tip: string, path: string): vscode.Uri {
+  return commitFileUri('mainline', root, tip, path);
 }
 
 /**
@@ -45,16 +50,21 @@ export function mainlineFileUri(tip: string, path: string): vscode.Uri {
  * theirs alone. The cost is that the line numbers are the base's, not your buffer's — which
  * is why this view accompanies the working-copy diff rather than replacing it.
  */
-export function baseFileUri(baseSha: string, path: string): vscode.Uri {
-  return commitFileUri('base', baseSha, path);
+export function baseFileUri(root: string, baseSha: string, path: string): vscode.Uri {
+  return commitFileUri('base', root, baseSha, path);
 }
 
-function commitFileUri(authority: string, ref: string, path: string): vscode.Uri {
+function commitFileUri(
+  authority: string,
+  root: string,
+  ref: string,
+  path: string
+): vscode.Uri {
   return vscode.Uri.from({
     scheme: GITRAY_SCHEME,
     authority,
     path: `/${path}`,
-    query: `ref=${encodeURIComponent(ref)}`
+    query: `ref=${encodeURIComponent(ref)}&root=${encodeURIComponent(root)}`
   });
 }
 
@@ -63,7 +73,7 @@ export class PullRequestContentProvider
 {
   private disposables: vscode.Disposable[] = [];
 
-  constructor(private readonly repository: Repository) {
+  constructor(private readonly workspace: Workspace) {
     this.disposables.push(
       vscode.workspace.registerTextDocumentContentProvider(GITRAY_SCHEME, this)
     );
@@ -73,8 +83,16 @@ export class PullRequestContentProvider
     const resolved = resolve(uri);
     if (!resolved) return '';
 
-    const { path, ref } = resolved;
-    const content = await this.repository.git.showFile(ref, path);
+    const { path, ref, root } = resolved;
+    // A tab restored from a session before this URI carried a root has none, and neither
+    // does one written by an older build. With a single repository open there is only one
+    // answer anyway, so those keep working rather than opening blank.
+    const session = this.workspace.sessionAt(root) ?? this.workspace.only();
+    if (!session) {
+      return `// GitRay: ${root ?? 'the repository'} is no longer open in this window.\n`;
+    }
+
+    const content = await session.repository.git.showFile(ref, path);
     if (content !== undefined) return content;
 
     // The file not existing on the other side is a real answer — it was added there, or
@@ -88,18 +106,22 @@ export class PullRequestContentProvider
   }
 }
 
-/** Pull the file path and the ref to read it from back out of a gitray: URI. */
-function resolve(uri: vscode.Uri): { path: string; ref: string } | undefined {
-  const ref = new URLSearchParams(uri.query).get('ref') ?? undefined;
+/** Pull the repository, the file path, and the ref to read it from back out of a gitray: URI. */
+function resolve(
+  uri: vscode.Uri
+): { path: string; ref: string; root: string | undefined } | undefined {
+  const query = new URLSearchParams(uri.query);
+  const ref = query.get('ref') ?? undefined;
+  const root = query.get('root') ?? undefined;
 
   // Only the pull request form encodes anything but the file in its path; every other
   // authority is a bare commit, and they all read the same way.
   if (uri.authority !== 'pr') {
     const path = uri.path.replace(/^\//, '');
-    return path && ref ? { path, ref } : undefined;
+    return path && ref ? { path, ref, root } : undefined;
   }
 
   const match = /^\/(\d+)\/(.+)$/.exec(uri.path);
   if (!match) return undefined;
-  return { path: match[2], ref: ref ?? prRef(Number(match[1])) };
+  return { path: match[2], ref: ref ?? prRef(Number(match[1])), root };
 }

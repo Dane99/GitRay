@@ -22,6 +22,9 @@ type ModuleLoader = { _load(request: string, parent: unknown, isMain: boolean): 
 let stub: VscodeStub;
 let DecorationPainter: typeof import('../../src/ui/decorations.js').DecorationPainter;
 
+/** The repository a painted card belongs to. Every command link has to carry it. */
+const REPO_ROOT = '/repo/alpha';
+
 const LINES = [
   'export function get(name) {',
   '  const lc = name.toLowerCase();',
@@ -149,7 +152,7 @@ const config = {
 };
 
 function paint(analysis: FileAnalysis, cursorLine = 0) {
-  const painter = new DecorationPainter(() => {});
+  const painter = new DecorationPainter(REPO_ROOT, () => {});
   const { editor, captured } = fakeEditor(cursorLine);
   painter.paint(editor, analysis, pullRequests, () => 0, config);
   painter.dispose();
@@ -244,7 +247,11 @@ test('the hover link carries the file, so it can land on that file’s diff', ()
   const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
 
   assert.ok(hover);
-  assert.deepEqual(commandArgs(hover, 'openPullRequest'), { prNumber: 7395, path: 'lib/request.js' });
+  assert.deepEqual(commandArgs(hover, 'openPullRequest'), {
+    root: REPO_ROOT,
+    prNumber: 7395,
+    path: 'lib/request.js'
+  });
 });
 
 test('the merged-work link carries the file too', () => {
@@ -252,7 +259,40 @@ test('the merged-work link carries the file too', () => {
   const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
 
   assert.ok(hover);
-  assert.deepEqual(commandArgs(hover, 'openPullRequest'), { prNumber: 412, path: 'lib/request.js' });
+  assert.deepEqual(commandArgs(hover, 'openPullRequest'), {
+    root: REPO_ROOT,
+    prNumber: 412,
+    path: 'lib/request.js'
+  });
+});
+
+/**
+ * Every link, not just the ones asserted above.
+ *
+ * A card is markdown: its arguments are frozen when it is painted and cannot consult
+ * anything afterwards. A link that omits the repository falls back to the *focused*
+ * editor's — so hovering the unfocused half of a split between two repositories would
+ * compare against the wrong one, or mute into the wrong folder's settings. Nothing errors,
+ * which is what would let it survive; asserting on every link is what keeps a newly added
+ * one from reintroducing it.
+ */
+test('every hover link names its repository, not just the ones that name a file', () => {
+  for (const analysis of [
+    analysisWith(region(1, 'collision')),
+    analysisWith(mergedRegion(1, 'collision', 412))
+  ]) {
+    const calls = paint(analysis);
+    const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
+    assert.ok(hover);
+
+    const links = [...hover.matchAll(/command:gitray\.(\w+)\?([^)\s"]+)/g)];
+    assert.ok(links.length > 0, 'the card should offer some actions');
+
+    for (const [, command, encoded] of links) {
+      const args = JSON.parse(decodeURIComponent(encoded))[0] as { root?: string };
+      assert.equal(args.root, REPO_ROOT, `the ${command} link dropped its repository`);
+    }
+  }
 });
 
 /** Decode the argument object a hover card's command link would invoke with. */
@@ -355,7 +395,7 @@ test('an ambient change draws a plain ray with no diamond at all', () => {
 });
 
 test('turning decorations off clears instead of drawing', () => {
-  const painter = new DecorationPainter(() => {});
+  const painter = new DecorationPainter(REPO_ROOT, () => {});
   const { editor, captured } = fakeEditor();
   painter.paint(editor, analysisWith(region(1, 'collision')), pullRequests, () => 0, {
     ...config,

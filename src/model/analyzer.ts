@@ -332,6 +332,22 @@ export class Analyzer {
     const key = pr.headRefOid;
     if (this.mergeBases.has(key)) return this.mergeBases.get(key);
 
+    // There are two ways to have no merge base, and only one of them is worth remembering.
+    //
+    // The head not being on disk is transient: it is fetched shortly *after* the pull
+    // request list lands, and muting deletes it so unmuting has to fetch it again. Asking
+    // git in that window correctly answers "no shared ancestor", and caching that answer
+    // is what used to make the gap permanent — this cache is keyed by head oid and cleared
+    // only when HEAD moves, so a single unlucky lookup left the file with no indicators
+    // for the rest of the session, immune to unmuting or repainting.
+    //
+    // Histories that genuinely do not meet — a shallow clone, an unrelated branch — are a
+    // stable answer, and those are still remembered so the question is asked once.
+    if (!(await this.git.refOid(prRef(pr.number)))) {
+      log.debug(`#${pr.number} has not been fetched yet; not caching its missing merge base`);
+      return undefined;
+    }
+
     const base = await this.git.mergeBase(prRef(pr.number));
     this.mergeBases.set(key, base);
     if (!base) {
@@ -348,6 +364,13 @@ export class Analyzer {
   ): Promise<ChangeRegion[]> {
     const cached = this.store.cachedRegions(path, pr.number, pr.headRefOid);
     if (cached) return cached;
+
+    // The same trap as `mergeBaseFor`, and the one that actually bites: with the head not
+    // on disk the diff comes back empty because there is nothing to diff against, not
+    // because they changed nothing. That empty answer is cached against the head oid, which
+    // does not change when the ref is re-fetched — so a pull request muted and unmuted went
+    // permanently blank even though its merge base was still cached and correct.
+    if (!(await this.git.refOid(prRef(pr.number)))) return [];
 
     const diffs = await this.git.diffRange(baseSha, prRef(pr.number), [path]);
     const regions: ChangeRegion[] = [];

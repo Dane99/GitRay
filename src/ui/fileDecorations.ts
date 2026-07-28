@@ -10,10 +10,8 @@
  */
 
 import * as vscode from 'vscode';
-import type { Store } from '../model/store.js';
-import type { CollisionScanner } from '../sync/scanner.js';
-import type { Repository } from '../providers/repository.js';
 import { hueColorId } from '../model/palette.js';
+import type { Workspace } from '../workspace.js';
 import { relativeTime } from './hover.js';
 
 export class GitRayFileDecorationProvider
@@ -23,27 +21,28 @@ export class GitRayFileDecorationProvider
   readonly onDidChangeFileDecorations = this.onDidChangeEmitter.event;
   private disposables: vscode.Disposable[] = [];
 
-  constructor(
-    private readonly repository: Repository,
-    private readonly store: Store,
-    private readonly scanner: CollisionScanner
-  ) {
+  constructor(private readonly workspace: Workspace) {
     this.disposables.push(
       this.onDidChangeEmitter,
       vscode.window.registerFileDecorationProvider(this),
       // Refreshing everything is the honest signal: a sync can add or remove badges
       // anywhere, and VS Code only re-queries the rows it is actually showing.
-      this.store.onDidChange(() => this.onDidChangeEmitter.fire(undefined)),
-      this.scanner.onDidChange(() => this.onDidChangeEmitter.fire(undefined))
+      this.workspace.onDidChange(() => this.onDidChangeEmitter.fire(undefined))
     );
   }
 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
-    const path = this.repository.relativePath(uri);
+    // The explorer asks about every folder in the window, so the first question is which
+    // repository — if any — this file belongs to. Everything below reads from that one.
+    const session = this.workspace.sessionFor(uri);
+    if (!session) return undefined;
+
+    const { store, scanner } = session;
+    const path = session.repository.relativePath(uri);
     if (!path) return undefined;
 
-    const summary = this.store.fileSummary(path);
-    const analysis = this.scanner.analysisFor(path);
+    const summary = store.fileSummary(path);
+    const analysis = scanner.analysisFor(path);
     const regions = analysis?.regions ?? [];
     const collisions = regions.filter((region) => region.severity === 'collision').length;
     const drifted = regions.some((region) => region.origin.kind === 'mainline');
@@ -61,8 +60,8 @@ export class GitRayFileDecorationProvider
           ? `GitRay: ${authors.length} ${authors.length === 1 ? 'collaborator' : 'collaborators'} editing this file`
           : 'GitRay: work that already merged touches this file',
       '',
-      ...(drifted ? [`${this.store.mainline()?.branch ?? 'main'} — already merged`] : []),
-      ...this.store.pullRequestsForPath(path).map(
+      ...(drifted ? [`${store.mainline()?.branch ?? 'main'} — already merged`] : []),
+      ...store.pullRequestsForPath(path).map(
         (pr) => `#${pr.number} ${pr.title} — ${pr.author}, ${relativeTime(pr.updatedAt)}`
       )
     ].join('\n');
@@ -89,7 +88,7 @@ export class GitRayFileDecorationProvider
       // Two characters is the hard limit, so a busy file reads as "9+" rather than
       // silently truncating to something misleading.
       badge: authors.length > 9 ? '9+' : String(authors.length),
-      color: new vscode.ThemeColor(hueColorId(this.store.hueFor(authors[0] ?? ''))),
+      color: new vscode.ThemeColor(hueColorId(store.hueFor(authors[0] ?? ''))),
       tooltip,
       propagate: true
     };

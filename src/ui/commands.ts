@@ -4,21 +4,23 @@
  * Commands are invoked from four places — the palette, tree context menus, hover card
  * links, and the radar — so every handler accepts a loosely-typed argument object and
  * falls back to the active editor when it is called without one.
+ *
+ * With several repositories open, "which one?" comes before every other question a handler
+ * asks. A tree row carries its session, a hover link and a diff URI carry their repository
+ * root, and everything else is answered by whichever repository the active editor is in —
+ * which is what makes a hover card's links act on the file the card is attached to. Only
+ * when none of those answers does a handler ask.
  */
 
 import * as vscode from 'vscode';
 import { log } from '../core/log.js';
 import { isMutedAuthor, readConfig, updateSetting } from '../core/config.js';
 import type { Store } from '../model/store.js';
-import type { Analyzer } from '../model/analyzer.js';
-import type { Repository } from '../providers/repository.js';
 import { prRef } from '../providers/git.js';
 import { pullRequestFileUrl } from '../providers/githubUrls.js';
 import { signIn } from '../providers/session.js';
-import type { Scheduler } from '../sync/scheduler.js';
-import type { SyncEngine } from '../sync/engine.js';
-import type { CollisionScanner } from '../sync/scanner.js';
-import type { EditorController } from './editorController.js';
+import type { RepositorySession } from '../session.js';
+import type { Workspace } from '../workspace.js';
 import { baseFileUri, mainlineFileUri, pullRequestFileUri } from './contentProvider.js';
 import { openWorkspaceFile } from './open.js';
 import { RadarPanel } from '../radar/panel.js';
@@ -30,6 +32,13 @@ interface CommandArgs {
   path?: string;
   line?: number;
   author?: string;
+  /** The repository root a caller named, when it knew one. */
+  root?: string;
+}
+
+/** A command's resolved target: which repository, and what in it. */
+interface Target extends CommandArgs {
+  session: RepositorySession;
 }
 
 /**
@@ -44,6 +53,10 @@ interface CommandArgs {
  * A collision row keeps its path one level down, inside `analysis`, so it has to be read
  * too. Missing it does not fail visibly — the file commands fall back to the active editor,
  * so a menu item clicked on one row silently acts on whichever file happens to be focused.
+ *
+ * The repository arrives two ways for the same reason. A tree row is a live object and
+ * carries its whole session; a hover link is a URL and can only carry a string, so it
+ * carries the root. Both are read here rather than duck-typed at each call site.
  */
 function toArgs(raw: unknown): CommandArgs {
   if (typeof raw !== 'object' || raw === null) return {};
@@ -53,15 +66,18 @@ function toArgs(raw: unknown): CommandArgs {
     path?: unknown;
     line?: unknown;
     author?: unknown;
+    root?: unknown;
     pr?: { number?: unknown; author?: unknown };
     analysis?: { path?: unknown };
+    session?: { repository?: { root?: unknown } };
   };
 
   return {
     prNumber: asNumber(node.prNumber ?? node.pr?.number),
     path: asString(node.path ?? node.analysis?.path),
     line: asNumber(node.line),
-    author: asString(node.author ?? node.pr?.author)
+    author: asString(node.author ?? node.pr?.author),
+    root: asString(node.root ?? node.session?.repository?.root)
   };
 }
 
@@ -75,32 +91,52 @@ function asString(value: unknown): string | undefined {
 
 export interface CommandContext {
   extensionUri: vscode.Uri;
-  repository: Repository;
-  store: Store;
-  analyzer: Analyzer;
-  scanner: CollisionScanner;
-  controller: EditorController;
-  scheduler: Scheduler;
-  engine: SyncEngine;
+  workspace: Workspace;
 }
 
 export function registerCommands(context: CommandContext): vscode.Disposable[] {
-  const { repository, store, analyzer, scanner, controller, scheduler, engine, extensionUri } =
-    context;
-
-  const openFile = (path: string, line?: number): Promise<void> =>
-    openWorkspaceFile(repository, path, line);
-
-  /** Resolve which pull request and path a command is about. */
-  const resolve = (raw?: unknown): CommandArgs => {
-    const args = toArgs(raw);
-    const editor = vscode.window.activeTextEditor;
-    const activePath = editor ? repository.relativePath(editor.document.uri) : undefined;
-    return { ...args, path: args.path ?? activePath };
-  };
+  const { workspace, extensionUri } = context;
 
   const say = (message: string): void => {
     void vscode.window.setStatusBarMessage(`GitRay: ${message}`, 2500);
+  };
+
+  /**
+   * Which repository a command is about, asking only when nothing else answers.
+   *
+   * `useActiveFile` is what separates the two kinds of file command. A hover card and a
+   * file row are asking about a specific file; the palette is asking about whatever you
+   * are looking at. The commands that are about a *pull request* rather than a file pass
+   * false, so they never silently adopt the path of an unrelated open editor.
+   */
+  const target = async (raw?: unknown, useActiveFile = true): Promise<Target | undefined> => {
+    const args = toArgs(raw);
+    const session =
+      workspace.sessionAt(args.root) ??
+      workspace.active() ??
+      (await promptForRepository(workspace));
+    if (!session) return undefined;
+
+    if (!useActiveFile || args.path !== undefined) return { ...args, session };
+
+    const editor = vscode.window.activeTextEditor;
+    const path = editor ? session.repository.relativePath(editor.document.uri) : undefined;
+    return { ...args, path, session };
+  };
+
+  /** Every repository, or the single one the caller named. */
+  const targets = (raw?: unknown): readonly RepositorySession[] => {
+    const named = workspace.sessionAt(toArgs(raw).root);
+    return named ? [named] : workspace.all();
+  };
+
+  const openFile = (session: RepositorySession, path: string, line?: number): Promise<void> =>
+    openWorkspaceFile(session.repository, path, line);
+
+  const refreshOne = async (session: RepositorySession): Promise<void> => {
+    await session.scheduler.request('manual');
+    await session.scanner.scan(session.config());
+    session.controller.refreshVisible();
   };
 
   /**
@@ -112,38 +148,58 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
    * marks in the gutter. The direct call is only for a pull request the store has never
    * seen, which has no cached answer to be consistent with.
    */
-  const mergeBaseFor = async (prNumber: number): Promise<string | undefined> => {
-    const pr = store.pullRequest(prNumber);
-    return pr ? analyzer.mergeBaseFor(pr) : repository.git.mergeBase(prRef(prNumber));
+  const mergeBaseFor = async (
+    session: RepositorySession,
+    prNumber: number
+  ): Promise<string | undefined> => {
+    const pr = session.store.pullRequest(prNumber);
+    return pr
+      ? session.analyzer.mergeBaseFor(pr)
+      : session.repository.git.mergeBase(prRef(prNumber));
   };
 
   return [
-    vscode.commands.registerCommand('gitray.refresh', async () => {
-      await scheduler.request('manual');
-      await scanner.scan(readConfig(repository.folder.uri));
-      controller.refreshVisible();
+    /**
+     * Refresh: the whole window from the view title or the palette, one repository when
+     * the caller named one. Polling each repository separately is the point — they have
+     * independent remotes, and one being unreachable must not hold up the others.
+     */
+    vscode.commands.registerCommand('gitray.refresh', async (raw?: unknown) => {
+      await Promise.all(targets(raw).map(refreshOne));
     }),
 
     vscode.commands.registerCommand('gitray.showOutput', () => log.show()),
 
     vscode.commands.registerCommand('gitray.toggleDecorations', async () => {
-      const current = readConfig(repository.folder.uri).decorationMode;
+      // Deliberately not per repository, and written workspace-wide: this is a statement
+      // about how loud the editor should be, and gutters going quiet in one folder but not
+      // the next would read as a bug rather than as a setting.
+      const current = readConfig(workspace.active()?.repository.folder.uri).decorationMode;
       // Cycle through the three modes rather than a binary toggle, so "quiet but still
       // warn me" is reachable without opening settings.
       const next =
         current === 'ambient' ? 'collisionsOnly' : current === 'collisionsOnly' ? 'off' : 'ambient';
       await updateSetting('decorations.mode', next);
-      controller.refreshVisible();
+      for (const session of workspace.all()) session.controller.refreshVisible();
       void vscode.window.setStatusBarMessage(`GitRay indicators: ${describeMode(next)}`, 2500);
     }),
 
-    vscode.commands.registerCommand('gitray.openRadar', () => {
-      RadarPanel.show(extensionUri, store, scanner, (path, line) => void openFile(path, line));
+    vscode.commands.registerCommand('gitray.openRadar', async (raw?: unknown) => {
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session } = found;
+      RadarPanel.show(
+        extensionUri,
+        session,
+        workspace.size > 1,
+        (path, line) => void openFile(session, path, line)
+      );
     }),
 
     vscode.commands.registerCommand('gitray.revealRegion', async (raw?: unknown) => {
       const args = toArgs(raw);
-      if (args.path) await openFile(args.path, args.line);
+      const session = workspace.sessionAt(args.root) ?? workspace.active();
+      if (session && args.path) await openFile(session, args.path, args.line);
     }),
 
     /**
@@ -155,21 +211,25 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      * whatever happens to be open would answer the second question with the first.
      */
     vscode.commands.registerCommand('gitray.openPullRequest', async (raw?: unknown) => {
-      const { prNumber: requested, path } = toArgs(raw);
-      const prNumber = requested ?? (await promptForPullRequest(store));
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session, path } = found;
+      const { store } = session;
+
+      const prNumber = found.prNumber ?? (await promptForPullRequest(store));
       if (prNumber === undefined) return;
 
       // Muted pull requests are openable too — that is how you decide whether to unmute
       // one — and their record still carries the url, so this need not shell out to gh.
       const pr = store.pullRequest(prNumber) ?? store.mutedPullRequest(prNumber);
-      const url = pr?.url || repository.github.pullRequestUrl(prNumber);
+      const url = pr?.url || session.repository.github.pullRequestUrl(prNumber);
       if (url) {
         await vscode.env.openExternal(vscode.Uri.parse(path ? pullRequestFileUrl(url, path) : url));
         return;
       }
       // Nothing local knows where this one lives; gh can look it up. It opens the pull
       // request itself — the redirect is all gh offers — so the file anchor is lost here.
-      await repository.github.openInBrowser(prNumber);
+      await session.repository.github.openInBrowser(prNumber);
     }),
 
     /**
@@ -180,21 +240,23 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      */
     vscode.commands.registerCommand('gitray.signIn', async () => {
       if (!(await signIn())) return;
-      // The engine re-probes on every pass while it is degraded, so this only brings the
+      // One account signs every repository in, so every one of them gets the news. The
+      // engine re-probes on every pass while it is degraded, so this only brings the
       // answer forward — but waiting a minute after signing in reads like nothing happened.
-      await scheduler.request('manual');
-      await scanner.scan(readConfig(repository.folder.uri));
-      controller.refreshVisible();
+      await Promise.all(workspace.all().map(refreshOne));
     }),
 
     vscode.commands.registerCommand('gitray.diffWithPullRequest', async (raw?: unknown) => {
-      const { path, prNumber: requested } = resolve(raw);
+      const found = await target(raw);
+      if (!found) return;
+      const { session, path } = found;
+      const { store } = session;
       if (!path) {
         void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
         return;
       }
 
-      const prNumber = requested ?? (await promptForPullRequestTouching(store, path));
+      const prNumber = found.prNumber ?? (await promptForPullRequestTouching(store, path));
       if (prNumber === undefined) return;
 
       const pr = store.pullRequest(prNumber);
@@ -202,8 +264,8 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
 
       await vscode.commands.executeCommand(
         'vscode.diff',
-        repository.uriFor(path),
-        pullRequestFileUri(prNumber, path),
+        session.repository.uriFor(path),
+        pullRequestFileUri(session.id, prNumber, path),
         title,
         { preview: true }
       );
@@ -222,16 +284,19 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      * hunk, the line numbers here match nothing you are typing into.
      */
     vscode.commands.registerCommand('gitray.diffPullRequestChange', async (raw?: unknown) => {
-      const { path, prNumber: requested } = resolve(raw);
+      const found = await target(raw);
+      if (!found) return;
+      const { session, path } = found;
+      const { store } = session;
       if (!path) {
         void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
         return;
       }
 
-      const prNumber = requested ?? (await promptForPullRequestTouching(store, path));
+      const prNumber = found.prNumber ?? (await promptForPullRequestTouching(store, path));
       if (prNumber === undefined) return;
 
-      const baseSha = await mergeBaseFor(prNumber);
+      const baseSha = await mergeBaseFor(session, prNumber);
       if (!baseSha) {
         // Without a shared ancestor there is no "their change alone" to show — every line
         // would differ. The working-copy diff still works, so point at it rather than
@@ -247,8 +312,8 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
 
       await vscode.commands.executeCommand(
         'vscode.diff',
-        baseFileUri(baseSha, path),
-        pullRequestFileUri(prNumber, path),
+        baseFileUri(session.id, baseSha, path),
+        pullRequestFileUri(session.id, prNumber, path),
         title,
         { preview: true }
       );
@@ -262,13 +327,15 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      * changes the marks never predicted.
      */
     vscode.commands.registerCommand('gitray.diffWithMainline', async (raw?: unknown) => {
-      const { path } = resolve(raw);
+      const found = await target(raw);
+      if (!found) return;
+      const { session, path } = found;
       if (!path) {
         void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
         return;
       }
 
-      const mainline = store.mainline();
+      const mainline = session.store.mainline();
       if (!mainline) {
         void vscode.window.showInformationMessage(
           'GitRay: the mainline has not been read yet. Try refreshing.'
@@ -278,8 +345,8 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
 
       await vscode.commands.executeCommand(
         'vscode.diff',
-        repository.uriFor(path),
-        mainlineFileUri(mainline.tip, path),
+        session.repository.uriFor(path),
+        mainlineFileUri(session.id, mainline.tip, path),
         `${basename(path)} — yours ↔ ${mainline.branch}`,
         { preview: true }
       );
@@ -294,13 +361,15 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      * did it, and recomputing risks answering with a different commit than the indicators.
      */
     vscode.commands.registerCommand('gitray.diffMainlineChange', async (raw?: unknown) => {
-      const { path } = resolve(raw);
+      const found = await target(raw);
+      if (!found) return;
+      const { session, path } = found;
       if (!path) {
         void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
         return;
       }
 
-      const mainline = store.mainline();
+      const mainline = session.store.mainline();
       if (!mainline) {
         void vscode.window.showInformationMessage(
           'GitRay: the mainline has not been read yet. Try refreshing.'
@@ -317,15 +386,20 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
 
       await vscode.commands.executeCommand(
         'vscode.diff',
-        baseFileUri(mainline.base, path),
-        mainlineFileUri(mainline.tip, path),
+        baseFileUri(session.id, mainline.base, path),
+        mainlineFileUri(session.id, mainline.tip, path),
         `${basename(path)} — base ↔ ${mainline.branch}`,
         { preview: true }
       );
     }),
 
     vscode.commands.registerCommand('gitray.checkoutPullRequest', async (raw?: unknown) => {
-      const prNumber = toArgs(raw).prNumber ?? (await promptForPullRequest(store));
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session } = found;
+      const { store, repository } = session;
+
+      const prNumber = found.prNumber ?? (await promptForPullRequest(store));
       if (prNumber === undefined) return;
 
       const pr = store.pullRequest(prNumber);
@@ -376,110 +450,160 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      * back. A mute you cannot find again is a mute you cannot undo.
      */
     vscode.commands.registerCommand('gitray.mutePullRequest', async (raw?: unknown) => {
-      const prNumber = toArgs(raw).prNumber ?? (await promptForPullRequest(store));
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session } = found;
+
+      const prNumber = found.prNumber ?? (await promptForPullRequest(session.store));
       if (prNumber === undefined) return;
 
-      const muted = readConfig(repository.folder.uri).mutedPullRequests;
+      const muted = session.config().mutedPullRequests;
       if (!muted.includes(prNumber)) {
-        await updateSetting('mutedPullRequests', [...muted, prNumber]);
+        await updateSetting('mutedPullRequests', [...muted, prNumber], scopeOf(session));
       }
-      await scheduler.request('manual');
+      await session.scheduler.request('manual');
       say(`muted #${prNumber}. Unmute it under Muted in the sidebar.`);
     }),
 
     vscode.commands.registerCommand('gitray.muteAuthor', async (raw?: unknown) => {
-      const author = toArgs(raw).author ?? (await promptForAuthor(store));
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session } = found;
+
+      const author = found.author ?? (await promptForAuthor(session.store));
       if (author === undefined) return;
 
-      const config = readConfig(repository.folder.uri);
+      const config = session.config();
       // Stored as GitHub spelled it, matched case-insensitively. The list is meant to be
       // readable by whoever opens settings.json next.
       if (!isMutedAuthor(config, author)) {
-        await updateSetting('mutedAuthors', [...config.mutedAuthors, author]);
+        await updateSetting('mutedAuthors', [...config.mutedAuthors, author], scopeOf(session));
       }
-      await scheduler.request('manual');
+      await session.scheduler.request('manual');
       say(`muted ${author}. Unmute them under Muted in the sidebar.`);
     }),
 
     vscode.commands.registerCommand('gitray.unmutePullRequest', async (raw?: unknown) => {
-      const muted = readConfig(repository.folder.uri).mutedPullRequests;
-      const prNumber = toArgs(raw).prNumber ?? (await promptForMutedPullRequest(store, muted));
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session } = found;
+
+      const muted = session.config().mutedPullRequests;
+      const prNumber = found.prNumber ?? (await promptForMutedPullRequest(session.store, muted));
       if (prNumber === undefined) return;
 
       await updateSetting(
         'mutedPullRequests',
-        muted.filter((number) => number !== prNumber)
+        muted.filter((number) => number !== prNumber),
+        scopeOf(session)
       );
-      await scheduler.request('manual');
+      await session.scheduler.request('manual');
       say(`unmuted #${prNumber}.`);
     }),
 
     vscode.commands.registerCommand('gitray.unmuteAuthor', async (raw?: unknown) => {
-      const muted = readConfig(repository.folder.uri).mutedAuthors;
-      const author = toArgs(raw).author ?? (await promptForMutedAuthor(store, muted));
+      const found = await target(raw, false);
+      if (!found) return;
+      const { session } = found;
+
+      const muted = session.config().mutedAuthors;
+      const author = found.author ?? (await promptForMutedAuthor(session.store, muted));
       if (author === undefined) return;
 
       await updateSetting(
         'mutedAuthors',
-        muted.filter((candidate) => candidate.toLowerCase() !== author.toLowerCase())
+        muted.filter((candidate) => candidate.toLowerCase() !== author.toLowerCase()),
+        scopeOf(session)
       );
-      await scheduler.request('manual');
+      await session.scheduler.request('manual');
       say(`unmuted ${author}.`);
     }),
 
-    vscode.commands.registerCommand('gitray.unmuteAll', async () => {
-      const config = readConfig(repository.folder.uri);
-      const count = config.mutedPullRequests.length + config.mutedAuthors.length;
+    /**
+     * Unmute everything.
+     *
+     * From the Muted row it clears that repository; from the view title or the palette it
+     * clears the window. "All" meaning one folder of several would be the wrong reading of
+     * a command whose whole promise is that nothing is left hidden.
+     */
+    vscode.commands.registerCommand('gitray.unmuteAll', async (raw?: unknown) => {
+      const sessions = targets(raw);
+      let count = 0;
+
+      for (const session of sessions) {
+        const config = session.config();
+        const here = config.mutedPullRequests.length + config.mutedAuthors.length;
+        if (here === 0) continue;
+
+        await updateSetting('mutedPullRequests', [], scopeOf(session));
+        await updateSetting('mutedAuthors', [], scopeOf(session));
+        await session.scheduler.request('manual');
+        count += here;
+      }
+
       if (count === 0) {
         say('nothing is muted.');
         return;
       }
-
-      await updateSetting('mutedPullRequests', []);
-      await updateSetting('mutedAuthors', []);
-      await scheduler.request('manual');
       say(`unmuted ${count} ${count === 1 ? 'entry' : 'entries'}.`);
     }),
 
     vscode.commands.registerCommand('gitray.nextCollision', () => {
-      void jumpToCollision(controller, scanner, repository, openFile, 'next');
+      void jumpToCollision(workspace, 'next');
     }),
 
     vscode.commands.registerCommand('gitray.previousCollision', () => {
-      void jumpToCollision(controller, scanner, repository, openFile, 'previous');
+      void jumpToCollision(workspace, 'previous');
     }),
 
-    vscode.commands.registerCommand('gitray.removeRefs', async () => {
+    vscode.commands.registerCommand('gitray.removeRefs', async (raw?: unknown) => {
+      const sessions = targets(raw);
+      if (sessions.length === 0) return;
+
+      const where =
+        sessions.length === 1 && workspace.size > 1 ? ` in ${sessions[0].label}` : '';
       const choice = await vscode.window.showWarningMessage(
-        'Remove every local refs/gitray/* ref? GitRay will re-fetch what it needs on the next sync.',
+        `Remove every local refs/gitray/* ref${where}? GitRay will re-fetch what it needs on the next sync.`,
         { modal: true },
         'Remove'
       );
       if (choice !== 'Remove') return;
 
-      const removed = await repository.git.deleteAllRefs();
+      let removed = 0;
+      for (const session of sessions) removed += await session.repository.git.deleteAllRefs();
       void vscode.window.showInformationMessage(
         `GitRay: removed ${removed} ${removed === 1 ? 'ref' : 'refs'}.`
       );
     }),
 
-    vscode.commands.registerCommand('gitray.loadFixture', async () => {
+    vscode.commands.registerCommand('gitray.loadFixture', async (raw?: unknown) => {
+      const found = await target(raw, false);
+      if (!found) return;
+
       const fixture = await pickFixture();
       if (!fixture) return;
 
-      engine.useFixture(fixture);
-      await scheduler.request('manual');
+      found.session.engine.useFixture(fixture);
+      await found.session.scheduler.request('manual');
       void vscode.window.showInformationMessage(
         `GitRay: loaded ${fixture.length} fixture pull ${fixture.length === 1 ? 'request' : 'requests'}.`
       );
     }),
 
-    vscode.commands.registerCommand('gitray.clearFixture', async () => {
-      engine.useFixture(undefined);
-      store.clear();
-      await scheduler.request('manual');
+    vscode.commands.registerCommand('gitray.clearFixture', async (raw?: unknown) => {
+      const found = await target(raw, false);
+      if (!found) return;
+
+      found.session.engine.useFixture(undefined);
+      found.session.store.clear();
+      await found.session.scheduler.request('manual');
     })
   ];
+}
+
+/** Where a per-repository setting written for this session belongs. */
+function scopeOf(session: RepositorySession): vscode.Uri {
+  return session.repository.folder.uri;
 }
 
 /**
@@ -488,15 +612,28 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
  * Searches the current file first and wraps to other affected files when there is
  * nothing left here, so repeated presses walk the whole branch's worth of conflicts
  * rather than dead-ending in one document.
+ *
+ * Scoped to one repository, and never asks which. This is on a keybinding, and a quick
+ * pick appearing under Alt+F8 would be worse than an imperfect guess: the file you are in
+ * decides, and failing that the first repository that has a collision to show at all.
  */
 async function jumpToCollision(
-  controller: EditorController,
-  scanner: CollisionScanner,
-  repository: Repository,
-  openFile: (path: string, line?: number) => Promise<void>,
+  workspace: Workspace,
   direction: 'next' | 'previous'
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
+  const session =
+    (editor ? workspace.sessionFor(editor.document.uri) : undefined) ??
+    workspace.only() ??
+    workspace.all().find((candidate) => candidate.scanner.collisionCount() > 0);
+
+  if (!session) {
+    void vscode.window.setStatusBarMessage('GitRay: no collisions with your current work.', 2500);
+    return;
+  }
+
+  const { controller, scanner, repository } = session;
+  const openFile = (path: string, line?: number) => openWorkspaceFile(repository, path, line);
   const currentPath = editor ? repository.relativePath(editor.document.uri) : undefined;
 
   if (editor && currentPath) {
@@ -546,6 +683,34 @@ function pickRelative(
   return direction === 'next'
     ? sorted.find((region) => region.range.start > line)
     : [...sorted].reverse().find((region) => region.range.start < line);
+}
+
+/**
+ * Which repository, when nothing in the invocation says.
+ *
+ * Only reachable with several attached and no relevant editor focused — a palette
+ * invocation from a settings tab, say. The root is the description because two folders
+ * checked out from the same project routinely share a name.
+ */
+async function promptForRepository(workspace: Workspace): Promise<RepositorySession | undefined> {
+  const sessions = workspace.all();
+  if (sessions.length === 0) {
+    void vscode.window.showInformationMessage(
+      'GitRay: no git repository is open in this window.'
+    );
+    return undefined;
+  }
+  if (sessions.length === 1) return sessions[0];
+
+  const picked = await vscode.window.showQuickPick(
+    sessions.map((session) => ({
+      label: session.label,
+      description: session.repository.root,
+      session
+    })),
+    { placeHolder: 'Which repository?' }
+  );
+  return picked?.session;
 }
 
 async function promptForPullRequest(store: Store): Promise<number | undefined> {
