@@ -29,10 +29,21 @@ const ENABLED_COMMANDS = [
 const MAX_PREVIEW_LINES = 14;
 const MAX_LISTED_COMMITS = 5;
 
+/**
+ * @param root The repository this file belongs to.
+ *
+ * Every link below carries it. A card is markdown, so its command arguments are frozen at
+ * paint time and cannot consult anything later — and the fallback they would otherwise land
+ * on is the *focused* editor's repository, which is the wrong one whenever the card is over
+ * a split you are not focused in. That is not a corner case: two repositories side by side
+ * is the shape multi-root workspaces are opened in, and the failure is silent, diffing the
+ * wrong repository's copy of the path or muting into the wrong folder's settings.
+ */
 export function buildHover(
   regions: readonly ResolvedRegion[],
   pullRequests: ReadonlyMap<number, PullRequest>,
-  relativePath: string
+  relativePath: string,
+  root: string
 ): vscode.MarkdownString {
   const md = new vscode.MarkdownString(undefined, true);
   md.isTrusted = { enabledCommands: ENABLED_COMMANDS };
@@ -41,9 +52,15 @@ export function buildHover(
   regions.forEach((region, index) => {
     if (index > 0) md.appendMarkdown('\n\n---\n\n');
     if (region.origin.kind === 'mainline') {
-      appendMainlineRegion(md, region, relativePath);
+      appendMainlineRegion(md, region, relativePath, root);
     } else {
-      appendPullRequestRegion(md, region, pullRequests.get(region.origin.prNumber), relativePath);
+      appendPullRequestRegion(
+        md,
+        region,
+        pullRequests.get(region.origin.prNumber),
+        relativePath,
+        root
+      );
     }
   });
 
@@ -79,7 +96,8 @@ function appendPullRequestRegion(
   md: vscode.MarkdownString,
   region: ResolvedRegion,
   pr: PullRequest | undefined,
-  relativePath: string
+  relativePath: string,
+  root: string
 ): void {
   const prNumber = region.origin.kind === 'pullRequest' ? region.origin.prNumber : 0;
   const title = pr?.title ?? 'Pull request';
@@ -95,7 +113,7 @@ function appendPullRequestRegion(
   appendPreview(md, region);
 
   const args = (extra: object = {}) =>
-    encodeURIComponent(JSON.stringify([{ prNumber, path: relativePath, ...extra }]));
+    encodeURIComponent(JSON.stringify([{ root, prNumber, path: relativePath, ...extra }]));
 
   const links = [
     // Both of these carry the path, which is what makes them land on this file's diff
@@ -117,7 +135,8 @@ function appendPullRequestRegion(
 function appendMainlineRegion(
   md: vscode.MarkdownString,
   region: ResolvedRegion,
-  relativePath: string
+  relativePath: string,
+  root: string
 ): void {
   if (region.origin.kind !== 'mainline') return;
   const { branch, commits } = region.origin;
@@ -134,7 +153,7 @@ function appendMainlineRegion(
   appendPreview(md, region);
   appendCommits(md, commits);
 
-  const args = encodeURIComponent(JSON.stringify([{ path: relativePath }]));
+  const args = encodeURIComponent(JSON.stringify([{ root, path: relativePath }]));
   const links = [
     `[Compare](command:gitray.diffWithMainline?${args} "Diff the mainline's version of this file against yours")`,
     `[What landed](command:gitray.diffMainlineChange?${args} "Diff just what landed on the mainline, without your own edits in the way")`
@@ -145,7 +164,7 @@ function appendMainlineRegion(
   const merged = soleCommit(commits);
   if (merged?.prNumber) {
     const prArgs = encodeURIComponent(
-      JSON.stringify([{ prNumber: merged.prNumber, path: relativePath }])
+      JSON.stringify([{ root, prNumber: merged.prNumber, path: relativePath }])
     );
     links.unshift(
       `[Open #${merged.prNumber}](command:gitray.openPullRequest?${prArgs} "Open the pull request this came from, at this file's changes")`

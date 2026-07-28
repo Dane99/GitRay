@@ -45,7 +45,15 @@ export class DecorationPainter implements vscode.Disposable {
   private flashTimers = new Map<string, NodeJS.Timeout>();
   private disposables: vscode.Disposable[] = [];
 
-  constructor(private readonly requestRepaint: (uri: vscode.Uri) => void) {
+  /**
+   * @param root The repository this painter paints for. A painter belongs to one session
+   *   for its whole life, so the hover cards it builds can name their repository outright
+   *   rather than leaving their links to guess at paint time. See buildHover.
+   */
+  constructor(
+    private readonly root: string,
+    private readonly requestRepaint: (uri: vscode.Uri) => void
+  ) {
     this.annotationType = createAnnotationType();
     this.disposables.push(
       vscode.window.onDidChangeActiveColorTheme(() => this.rebuildForTheme())
@@ -117,7 +125,7 @@ export class DecorationPainter implements vscode.Disposable {
 
       const options: vscode.DecorationOptions = {
         range,
-        hoverMessage: buildHover(run.bucket.regions, pullRequests, analysis.path)
+        hoverMessage: buildHover(run.bucket.regions, pullRequests, analysis.path, this.root)
       };
 
       const existing = groups.get(key);

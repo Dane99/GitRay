@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.12
+
+- **Multi-root workspaces see every repository, not just the first.** GitRay attached to the
+  first workspace folder backed by a git repository and stopped looking. Everything below
+  that decision — the store, the poll loop, the collision scan, every badge, every diff —
+  was built for that one repository, so a workspace holding a service and its client, or a
+  fork checked out beside its upstream, went dark everywhere but one folder. It went dark
+  quietly: no row, no status, no log line to say the other repositories were there. Each git
+  folder now gets its own session, and the surfaces the editor only lets an extension
+  register once read across all of them.
+  - The sidebar puts a row per repository above the usual sections, with the same three
+    counts the status bar totals, so a number can be traced back to where it came from
+    without expanding anything. A single repository keeps the flat shape it had.
+  - Everything that is about a file follows the file — hover cards, badges, `Alt+F8`, and
+    the diff commands all act on the repository the document belongs to, so a shared path
+    like `src/app.ts` can no longer be read out of the wrong one. Diff URIs carry their
+    repository for the same reason. A repository nested inside another workspace folder
+    claims its own files.
+  - Refresh and *Unmute All* act on the window from the palette or the view title, and on
+    one repository from its row. The Radar is per repository and retargets rather than
+    opening a second panel, since ranking files across repositories would produce a top
+    entry that means nothing.
+  - Every `gitray.*` setting is now folder-scoped, so each repository can point at its own
+    remote or mainline. Mutes are written to the folder they were made in: the workspace
+    list is shared by every folder, so a mute of #5 used to silence an unrelated #5 next
+    door.
+  - Sessions are reconciled rather than rebuilt when folders come and go, so adding a second
+    folder does not restart the first one's sync or re-fetch heads it already has. Folder
+    events are serialized: two arriving while a pass was suspended in git used to attach the
+    same folder twice, orphaning a session that kept polling until the window closed. A pass
+    suspended in git when the extension shuts down is abandoned rather than finishing into a
+    disposed workspace, since `deactivate` also runs on disable and update — where the host
+    keeps running and an orphan's poll timer would outlive the extension.
+  - Hover card links carry their repository. A card is markdown, so its arguments are frozen
+    when it is painted and cannot consult anything later — the fallback they would otherwise
+    land on is the *focused* editor's repository, which is the wrong one whenever the card is
+    over a split you are not focused in.
+  - A restored Radar panel survives a reload. VS Code hands panels back the moment the
+    serializer is registered, before the first repository has been discovered, so reading the
+    session list there found it empty and threw the tab away — single-repository windows
+    included.
+  - The status bar stays visible whenever any repository is degraded, even when the healthy
+    ones have nothing to report. Otherwise the only notice of the breakage was hidden by the
+    counts being zero.
+
 ## 0.1.11
 
 - **"Compare" no longer buries their change in yours.** The diff put your working file on

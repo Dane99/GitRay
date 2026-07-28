@@ -170,7 +170,7 @@ ambient → collisions only → off from the command palette.
 - **Status bar** — `$(radio-tower) 5 $(git-merge) 12 ⟂ 2`: open pull requests, commits the
   mainline is ahead by, collisions. Each part is dropped when it is zero, and the item
   takes a warning background only when something actually overlaps your work.
-- **Radar** (`GitRay: Open Radar`) — the whole repository on one screen. *Hot spots* ranks
+- **Radar** (`GitRay: Open Radar`) — one repository on one screen. *Hot spots* ranks
   files by how contested they are, including files whose only claimant already merged;
   *Lanes* shows each pull request as a row of file blocks sized by change volume.
 - **Compare** — open a real VS Code diff of a collaborator's version of a file, or the
@@ -180,6 +180,28 @@ ambient → collisions only → off from the command palette.
   the left is what shows whether their change lands on yours, the ancestor is what shows
   what they actually wrote, and one diff cannot answer both. Note that the second view is in
   ancestor coordinates, so its line numbers are not your buffer's.
+
+### Multi-root workspaces
+
+Every folder in the workspace that is a git repository is watched, each with its own poll
+loop, its own mainline, and its own collision scan. Nothing is shared between them: a pull
+request in one repository cannot collide with a file in another, and the two have different
+merge bases, different remotes, and often different collaborators.
+
+With more than one attached, the sidebar puts a row per repository above the usual sections
+and the status bar totals across all of them, breaking the total down per repository in its
+tooltip. The Radar is per repository — hot spots rank files, and files in different
+repositories are never the same file — so it opens on whichever one you are in, and
+retargets rather than opening a second panel.
+
+Refresh, and *Unmute All*, act on the whole window from the palette or the view title, and
+on one repository when invoked from its row. Everything else follows the file: a hover card,
+a badge, or a diff belongs to a specific document, and that is what decides which repository
+answers. A repository nested inside another workspace folder claims its own files.
+
+All `gitray.*` settings are folder-scoped, so a fork checked out beside its upstream can
+point each at a different remote. Mutes are written to the folder they were made in — pull
+request #5 in one repository has nothing to do with #5 in the next.
 
 ### Muting
 

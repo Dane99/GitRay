@@ -15,8 +15,7 @@
 
 import * as vscode from 'vscode';
 import { behindMainline, prNumberOf } from '../core/types.js';
-import type { Store } from '../model/store.js';
-import type { CollisionScanner } from '../sync/scanner.js';
+import type { RepositorySession } from '../session.js';
 import { hueColorId } from '../model/palette.js';
 import { relativeTime } from '../ui/hover.js';
 
@@ -73,20 +72,31 @@ export class RadarPanel implements vscode.Disposable {
   private readonly panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
 
+  /**
+   * The radar is about one repository at a time.
+   *
+   * Hot spots and lanes are both built from files that several people are editing, and
+   * files from different repositories can never be the same file — merging them into one
+   * view would produce a ranking where the top entry means nothing. So the panel belongs
+   * to a session, and asking for a different one retargets it rather than opening a second.
+   */
   static show(
     extensionUri: vscode.Uri,
-    store: Store,
-    scanner: CollisionScanner,
+    session: RepositorySession,
+    qualified: boolean,
     onOpenFile: (path: string, line?: number) => void
   ): void {
     if (RadarPanel.instance) {
-      RadarPanel.instance.panel.reveal(vscode.ViewColumn.Active);
-      return;
+      if (RadarPanel.instance.session === session) {
+        RadarPanel.instance.panel.reveal(vscode.ViewColumn.Active);
+        return;
+      }
+      RadarPanel.instance.dispose();
     }
 
     const panel = vscode.window.createWebviewPanel(
       RadarPanel.viewType,
-      'GitRay Radar',
+      title(session, qualified),
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -97,39 +107,47 @@ export class RadarPanel implements vscode.Disposable {
       }
     );
 
-    RadarPanel.instance = new RadarPanel(panel, extensionUri, store, scanner, onOpenFile);
+    RadarPanel.instance = new RadarPanel(panel, extensionUri, session, qualified, onOpenFile);
   }
 
   static restore(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
-    store: Store,
-    scanner: CollisionScanner,
+    session: RepositorySession,
+    qualified: boolean,
     onOpenFile: (path: string, line?: number) => void
   ): void {
     RadarPanel.instance?.dispose();
-    RadarPanel.instance = new RadarPanel(panel, extensionUri, store, scanner, onOpenFile);
+    RadarPanel.instance = new RadarPanel(panel, extensionUri, session, qualified, onOpenFile);
   }
 
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
-    private readonly store: Store,
-    private readonly scanner: CollisionScanner,
+    private readonly session: RepositorySession,
+    qualified: boolean,
     private readonly onOpenFile: (path: string, line?: number) => void
   ) {
     this.panel = panel;
+    this.panel.title = title(session, qualified);
     this.panel.webview.html = render(this.panel.webview, extensionUri);
     this.panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'gitray.svg');
 
     this.disposables.push(
       this.panel.onDidDispose(() => this.dispose()),
-      this.store.onDidChange(() => this.post()),
-      this.scanner.onDidChange(() => this.post()),
+      this.session.onDidChange(() => this.post()),
       this.panel.webview.onDidReceiveMessage((message) => this.handle(message))
     );
 
     this.post();
+  }
+
+  private get store() {
+    return this.session.store;
+  }
+
+  private get scanner() {
+    return this.session.scanner;
   }
 
   private handle(message: unknown): void {
@@ -144,7 +162,9 @@ export class RadarPanel implements vscode.Disposable {
         if (typeof path === 'string') this.onOpenFile(path, line);
         break;
       case 'refresh':
-        void vscode.commands.executeCommand('gitray.refresh');
+        // Named, so the button refreshes the repository the panel is showing rather than
+        // every repository in the window.
+        void vscode.commands.executeCommand('gitray.refresh', { root: this.session.id });
         break;
     }
   }
@@ -270,6 +290,11 @@ export class RadarPanel implements vscode.Disposable {
     this.disposables = [];
     this.panel.dispose();
   }
+}
+
+/** Name the repository in the tab only when there is more than one it could be. */
+function title(session: RepositorySession, qualified: boolean): string {
+  return qualified ? `GitRay Radar — ${session.label}` : 'GitRay Radar';
 }
 
 function render(webview: vscode.Webview, extensionUri: vscode.Uri): string {
