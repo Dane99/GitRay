@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -115,10 +115,22 @@
         "icon": "$(git-compare)"
       },
       {
+        "command": "gitray.diffPullRequestChange",
+        "title": "Show Only Their Change",
+        "category": "GitRay",
+        "icon": "$(diff-single)"
+      },
+      {
         "command": "gitray.diffWithMainline",
         "title": "Compare With the Mainline",
         "category": "GitRay",
         "icon": "$(git-merge)"
+      },
+      {
+        "command": "gitray.diffMainlineChange",
+        "title": "Show Only What Landed on the Mainline",
+        "category": "GitRay",
+        "icon": "$(diff-single)"
       },
       {
         "command": "gitray.checkoutPullRequest",
@@ -268,9 +280,19 @@
           "group": "inline@1"
         },
         {
-          "command": "gitray.diffWithMainline",
+          "command": "gitray.diffPullRequestChange",
           "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
           "group": "1_gitray@1"
+        },
+        {
+          "command": "gitray.diffWithMainline",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
+          "group": "1_gitray@2"
+        },
+        {
+          "command": "gitray.diffMainlineChange",
+          "when": "view == gitray.pulse && viewItem =~ /gitray.file/",
+          "group": "1_gitray@3"
         }
       ],
       "commandPalette": [
@@ -287,7 +309,15 @@
           "when": "false"
         },
         {
+          "command": "gitray.diffPullRequestChange",
+          "when": "false"
+        },
+        {
           "command": "gitray.diffWithMainline",
+          "when": "false"
+        },
+        {
+          "command": "gitray.diffMainlineChange",
           "when": "false"
         },
         {

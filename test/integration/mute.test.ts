@@ -99,6 +99,7 @@ function harness() {
     extensionUri: (stub.api.Uri as { file(p: string): never }).file(ROOT),
     repository,
     store,
+    analyzer: { mergeBaseFor: async () => undefined } as never,
     scanner: fakeScanner,
     controller: { refreshVisible: () => {}, analysisFor: () => undefined } as never,
     scheduler: {

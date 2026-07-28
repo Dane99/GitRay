@@ -85,6 +85,7 @@ async function build(context: vscode.ExtensionContext): Promise<vscode.Disposabl
     extensionUri: context.extensionUri,
     repository,
     store,
+    analyzer,
     scanner,
     controller,
     scheduler,

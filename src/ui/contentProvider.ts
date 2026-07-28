@@ -9,11 +9,12 @@
  * URI shapes:
  *   gitray://pr/<number>/<path>?ref=<ref>
  *   gitray://mainline/<path>?ref=<sha>
+ *   gitray://base/<path>?ref=<sha>
  *
  * The pull request form carries its number in the path because that is what names the tab.
- * The mainline form cannot: a branch may contain slashes, which would make the boundary
- * between branch and file path ambiguous, so the commit travels in the query instead and
- * the path is nothing but the file.
+ * The other two cannot: a branch may contain slashes, which would make the boundary between
+ * branch and file path ambiguous, so the commit travels in the query instead and the path
+ * is nothing but the file.
  */
 
 import * as vscode from 'vscode';
@@ -33,11 +34,27 @@ export function pullRequestFileUri(prNumber: number, path: string): vscode.Uri {
 
 /** The mainline's copy of a file, pinned to the commit it was analyzed against. */
 export function mainlineFileUri(tip: string, path: string): vscode.Uri {
+  return commitFileUri('mainline', tip, path);
+}
+
+/**
+ * The file as it stood at the commit both sides edited away from.
+ *
+ * This is the left-hand side of a "just their change" diff: putting the base here instead
+ * of your working copy is what keeps your own edits out of the result, so what remains is
+ * theirs alone. The cost is that the line numbers are the base's, not your buffer's — which
+ * is why this view accompanies the working-copy diff rather than replacing it.
+ */
+export function baseFileUri(baseSha: string, path: string): vscode.Uri {
+  return commitFileUri('base', baseSha, path);
+}
+
+function commitFileUri(authority: string, ref: string, path: string): vscode.Uri {
   return vscode.Uri.from({
     scheme: GITRAY_SCHEME,
-    authority: 'mainline',
+    authority,
     path: `/${path}`,
-    query: `ref=${encodeURIComponent(tip)}`
+    query: `ref=${encodeURIComponent(ref)}`
   });
 }
 
@@ -75,7 +92,9 @@ export class PullRequestContentProvider
 function resolve(uri: vscode.Uri): { path: string; ref: string } | undefined {
   const ref = new URLSearchParams(uri.query).get('ref') ?? undefined;
 
-  if (uri.authority === 'mainline') {
+  // Only the pull request form encodes anything but the file in its path; every other
+  // authority is a bare commit, and they all read the same way.
+  if (uri.authority !== 'pr') {
     const path = uri.path.replace(/^\//, '');
     return path && ref ? { path, ref } : undefined;
   }

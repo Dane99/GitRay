@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.11
+
+- **"Compare" no longer buries their change in yours.** The diff put your working file on
+  the left, so their edit arrived interleaved with every change of your own — on a file you
+  had been working in, the one thing the command exists to show was the hardest thing in it
+  to find. Two new commands put the common ancestor on the left instead: `Show Only Their
+  Change` for a pull request, `Show Only What Landed on the Mainline` for merged work. Both
+  are on the hover card next to Compare, and on the context menu of any file row.
+  - Both sides come out of the local object store, so this costs one `git show` per side and
+    no network. The merge base is the one the analyzer already computed, which is what keeps
+    the diff and the gutter indicators from ever disagreeing about which commit the base is.
+  - The old command is unchanged and is still what the sidebar's file rows open. The two
+    views answer different questions — your copy on the left is what shows whether their
+    change lands on yours, the ancestor is what shows what they wrote — and neither one can
+    do both. What would do both is a three-way merge view, which VS Code does not expose to
+    extensions.
+  - The new views are in ancestor coordinates, so with edits of your own above their hunk
+    the line numbers match nothing in your buffer. GitRay's own indicators do not paint
+    there either: both sides are virtual documents, and decorations only attach to real
+    files. In a shallow clone or after a force push there may be no common ancestor at all,
+    and rather than diff against the wrong commit it says so and leaves Compare to you.
+- **A diff opened from a collision row now opens that row's file.** The rows under *Collisions*
+  keep their path inside `analysis` rather than at the top level, and the argument reader
+  only looked at the top level — so the command found no file and fell back to the active
+  editor, quietly diffing whatever happened to be focused instead. Nothing errored, which is
+  what made it survive: you got a real diff of the wrong file. Present since the mainline
+  compare shipped, and newly worth fixing now that the same menu carries three entries.
+
 ## 0.1.10
 
 - **Hover links land on the file, not at the top of the pull request.** "Open PR" opened the
