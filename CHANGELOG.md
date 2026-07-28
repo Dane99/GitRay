@@ -2,6 +2,27 @@
 
 ## 0.1.12
 
+- **Unmuting a pull request brings its indicators back.** Muting deletes the local
+  `refs/gitray/*` head; unmuting re-fetches it. But the pull request returns to the open
+  list *before* the fetch lands — `setPullRequests` fires synchronously and the fetch is
+  awaited after it — so the repaint it triggers ran against a ref that was not on disk yet.
+  Both answers computed in that window were then cached against the pull request's head oid,
+  which does not change when the ref comes back:
+  - `mergeBaseFor` cached the `undefined` merge base. That cache is cleared only when HEAD
+    moves, so the file was written off for the rest of the session.
+  - `regionsFor` cached the empty diff — the one that actually fires, because muting prunes
+    a pull request's cached regions while leaving its merge base warm, so the diff is what
+    meets the missing ref.
+
+  Neither is an answer worth remembering: a head that is not on disk yet is a transient
+  state, not a statement that the histories do not meet. Both now return without caching,
+  while a genuinely unrelated history is still remembered so the question is asked once.
+  A successful fetch also announces itself, so the surfaces recompute as soon as the objects
+  land rather than waiting out the poll interval.
+
+  Reachable without muting anything — it is the same race on the first sync after any pull
+  request head changes — but muting and unmuting hit it every time.
+
 - **Multi-root workspaces see every repository, not just the first.** GitRay attached to the
   first workspace folder backed by a git repository and stopped looking. Everything below
   that decision — the store, the poll loop, the collision scan, every badge, every diff —
