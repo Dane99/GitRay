@@ -96,7 +96,9 @@ function appendPullRequestRegion(
     encodeURIComponent(JSON.stringify([{ prNumber, path: relativePath, ...extra }]));
 
   const links = [
-    `[Open PR](command:gitray.openPullRequest?${args()} "Open #${prNumber} on GitHub")`,
+    // Both of these carry the path, which is what makes them land on this file's diff
+    // rather than at the top of the pull request. See githubUrls.ts.
+    `[Open PR](command:gitray.openPullRequest?${args()} "Open #${prNumber} on GitHub, at this file's changes")`,
     `[Compare](command:gitray.diffWithPullRequest?${args()} "Diff their version of this file against yours")`,
     `[Check out](command:gitray.checkoutPullRequest?${args()} "Check out this branch locally")`,
     `[Mute](command:gitray.mutePullRequest?${args()} "Stop showing this pull request")`
@@ -139,7 +141,7 @@ function appendMainlineRegion(
       JSON.stringify([{ prNumber: merged.prNumber, path: relativePath }])
     );
     links.unshift(
-      `[Open #${merged.prNumber}](command:gitray.openPullRequest?${prArgs} "Open the pull request this came from")`
+      `[Open #${merged.prNumber}](command:gitray.openPullRequest?${prArgs} "Open the pull request this came from, at this file's changes")`
     );
   }
 

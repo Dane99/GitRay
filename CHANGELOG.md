@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.10
+
+- **Hover links land on the file, not at the top of the pull request.** "Open PR" opened the
+  discussion and left you to find the file you had just been reading, in a diff that might
+  be forty files long — the one action on the card that made you redo work the card had
+  already done for you. GitHub names each file on a Files tab with an anchor derived from
+  the sha256 of its path, so the destination is computable without asking GitHub anything:
+  the link now opens that file's changes directly, and so does `Open #N` on merged work.
+  - The anchor matches only when your checkout and the diff spell the path the same way, so
+    a rename between them misses — the pull request renaming the file itself, or a rename
+    landed since it merged. Either way the browser stays at the top of the Files tab, which
+    is where the link used to land. The miss costs a scroll, never a wrong destination.
+  - Only the surfaces that are about a file pass one. Opening a pull request from the
+    palette or from its row in the sidebar still opens the pull request, rather than
+    guessing a file from whichever editor happens to be focused.
+
 ## 0.1.9
 
 - **The fork workflow works.** `origin` was hardcoded everywhere a remote was needed, which
