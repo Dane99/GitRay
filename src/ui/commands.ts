@@ -11,6 +11,7 @@ import { log } from '../core/log.js';
 import { isMutedAuthor, readConfig, updateSetting } from '../core/config.js';
 import type { Store } from '../model/store.js';
 import type { Repository } from '../providers/repository.js';
+import { pullRequestFileUrl } from '../providers/githubUrls.js';
 import { signIn } from '../providers/session.js';
 import type { Scheduler } from '../sync/scheduler.js';
 import type { SyncEngine } from '../sync/engine.js';
@@ -122,8 +123,17 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       if (args.path) await openFile(args.path, args.line);
     }),
 
+    /**
+     * Open a pull request on GitHub, at a file when the caller named one.
+     *
+     * The path is taken only from what the caller passed, never from the active editor:
+     * a hover card and a file row are asking about a specific file, while the palette and
+     * a pull request row are asking about the pull request, and guessing the file from
+     * whatever happens to be open would answer the second question with the first.
+     */
     vscode.commands.registerCommand('gitray.openPullRequest', async (raw?: unknown) => {
-      const prNumber = toArgs(raw).prNumber ?? (await promptForPullRequest(store));
+      const { prNumber: requested, path } = toArgs(raw);
+      const prNumber = requested ?? (await promptForPullRequest(store));
       if (prNumber === undefined) return;
 
       // Muted pull requests are openable too — that is how you decide whether to unmute
@@ -131,10 +141,11 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       const pr = store.pullRequest(prNumber) ?? store.mutedPullRequest(prNumber);
       const url = pr?.url || repository.github.pullRequestUrl(prNumber);
       if (url) {
-        await vscode.env.openExternal(vscode.Uri.parse(url));
+        await vscode.env.openExternal(vscode.Uri.parse(path ? pullRequestFileUrl(url, path) : url));
         return;
       }
-      // Nothing local knows where this one lives; gh can look it up.
+      // Nothing local knows where this one lives; gh can look it up. It opens the pull
+      // request itself — the redirect is all gh offers — so the file anchor is lost here.
       await repository.github.openInBrowser(prNumber);
     }),
 

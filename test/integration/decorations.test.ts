@@ -232,6 +232,36 @@ test('a merged commit that kept its pull request number stays linkable', () => {
   assert.match(hover, /#412/);
 });
 
+/**
+ * The path is what turns "open the pull request" into "open this file's diff".
+ *
+ * Worth asserting on the wire rather than trusting the call site: drop it and the command
+ * still works, still opens the right pull request, and quietly stops scrolling anywhere —
+ * a regression with no symptom other than one more click.
+ */
+test('the hover link carries the file, so it can land on that file’s diff', () => {
+  const calls = paint(analysisWith(region(1, 'collision')));
+  const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
+
+  assert.ok(hover);
+  assert.deepEqual(commandArgs(hover, 'openPullRequest'), { prNumber: 7395, path: 'lib/request.js' });
+});
+
+test('the merged-work link carries the file too', () => {
+  const calls = paint(analysisWith(mergedRegion(1, 'collision', 412)));
+  const hover = calls.flatMap((c) => c.options).find((o) => o.hoverMessage)?.hoverMessage?.value;
+
+  assert.ok(hover);
+  assert.deepEqual(commandArgs(hover, 'openPullRequest'), { prNumber: 412, path: 'lib/request.js' });
+});
+
+/** Decode the argument object a hover card's command link would invoke with. */
+function commandArgs(hover: string, command: string): unknown {
+  const match = new RegExp(`command:gitray\\.${command}\\?([^)\\s"]+)`).exec(hover);
+  assert.ok(match, `no ${command} link in the hover`);
+  return JSON.parse(decodeURIComponent(match[1]))[0];
+}
+
 test('a merged commit with no recoverable number offers no pull request link', () => {
   // Fabricating one would open somebody else's discussion, which is worse than no link.
   const calls = paint(analysisWith(mergedRegion(1, 'collision')));

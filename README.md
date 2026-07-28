@@ -115,7 +115,9 @@ something that might.
 
 Each collaborator gets a stable hue derived from their login, so you learn who is who. When
 several people touch one line the ray splits into stacked segments. Hovering any marked
-line gives the pull request, the author, a diff of their change, and one-click actions.
+line gives the pull request, the author, a diff of their change, and one-click actions —
+including **Open PR**, which opens that file's changes on GitHub rather than the top of a
+discussion you would then have to search.
 
 The only filled shape in the set is the collision mark — the one state that means *look
 now* — so it stays legible even without color.
