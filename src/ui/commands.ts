@@ -10,14 +10,16 @@ import * as vscode from 'vscode';
 import { log } from '../core/log.js';
 import { isMutedAuthor, readConfig, updateSetting } from '../core/config.js';
 import type { Store } from '../model/store.js';
+import type { Analyzer } from '../model/analyzer.js';
 import type { Repository } from '../providers/repository.js';
+import { prRef } from '../providers/git.js';
 import { pullRequestFileUrl } from '../providers/githubUrls.js';
 import { signIn } from '../providers/session.js';
 import type { Scheduler } from '../sync/scheduler.js';
 import type { SyncEngine } from '../sync/engine.js';
 import type { CollisionScanner } from '../sync/scanner.js';
 import type { EditorController } from './editorController.js';
-import { mainlineFileUri, pullRequestFileUri } from './contentProvider.js';
+import { baseFileUri, mainlineFileUri, pullRequestFileUri } from './contentProvider.js';
 import { openWorkspaceFile } from './open.js';
 import { RadarPanel } from '../radar/panel.js';
 import { pickFixture } from '../dev/fixtures.js';
@@ -38,6 +40,10 @@ interface CommandArgs {
  * what makes "Mute" on a row act on *that* row; before this, every context-menu invocation
  * arrived with no recognisable argument and fell through to a quick pick asking which pull
  * request you meant, having just been told.
+ *
+ * A collision row keeps its path one level down, inside `analysis`, so it has to be read
+ * too. Missing it does not fail visibly — the file commands fall back to the active editor,
+ * so a menu item clicked on one row silently acts on whichever file happens to be focused.
  */
 function toArgs(raw: unknown): CommandArgs {
   if (typeof raw !== 'object' || raw === null) return {};
@@ -48,11 +54,12 @@ function toArgs(raw: unknown): CommandArgs {
     line?: unknown;
     author?: unknown;
     pr?: { number?: unknown; author?: unknown };
+    analysis?: { path?: unknown };
   };
 
   return {
     prNumber: asNumber(node.prNumber ?? node.pr?.number),
-    path: asString(node.path),
+    path: asString(node.path ?? node.analysis?.path),
     line: asNumber(node.line),
     author: asString(node.author ?? node.pr?.author)
   };
@@ -70,6 +77,7 @@ export interface CommandContext {
   extensionUri: vscode.Uri;
   repository: Repository;
   store: Store;
+  analyzer: Analyzer;
   scanner: CollisionScanner;
   controller: EditorController;
   scheduler: Scheduler;
@@ -77,7 +85,8 @@ export interface CommandContext {
 }
 
 export function registerCommands(context: CommandContext): vscode.Disposable[] {
-  const { repository, store, scanner, controller, scheduler, engine, extensionUri } = context;
+  const { repository, store, analyzer, scanner, controller, scheduler, engine, extensionUri } =
+    context;
 
   const openFile = (path: string, line?: number): Promise<void> =>
     openWorkspaceFile(repository, path, line);
@@ -92,6 +101,20 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
 
   const say = (message: string): void => {
     void vscode.window.setStatusBarMessage(`GitRay: ${message}`, 2500);
+  };
+
+  /**
+   * The commit a pull request and your branch share.
+   *
+   * Routed through the analyzer so this is the *same* answer the indicators were computed
+   * against — asking git again would usually agree and, in the window where a fetch has
+   * moved the head, quietly would not, putting a diff on screen that disagrees with the
+   * marks in the gutter. The direct call is only for a pull request the store has never
+   * seen, which has no cached answer to be consistent with.
+   */
+  const mergeBaseFor = async (prNumber: number): Promise<string | undefined> => {
+    const pr = store.pullRequest(prNumber);
+    return pr ? analyzer.mergeBaseFor(pr) : repository.git.mergeBase(prRef(prNumber));
   };
 
   return [
@@ -187,6 +210,51 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
     }),
 
     /**
+     * Diff a pull request's change on its own, with your work left out of it.
+     *
+     * The companion to the command above rather than a replacement for it, because the two
+     * answer different questions. Putting your working copy on the left is what shows
+     * whether their edit lands on yours; putting the merge base there is what shows what
+     * they actually wrote. Neither view can do both, and a diff that silently mixed the
+     * answers is the thing this exists to fix.
+     *
+     * The price is that these are base coordinates: with edits of your own above their
+     * hunk, the line numbers here match nothing you are typing into.
+     */
+    vscode.commands.registerCommand('gitray.diffPullRequestChange', async (raw?: unknown) => {
+      const { path, prNumber: requested } = resolve(raw);
+      if (!path) {
+        void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
+        return;
+      }
+
+      const prNumber = requested ?? (await promptForPullRequestTouching(store, path));
+      if (prNumber === undefined) return;
+
+      const baseSha = await mergeBaseFor(prNumber);
+      if (!baseSha) {
+        // Without a shared ancestor there is no "their change alone" to show — every line
+        // would differ. The working-copy diff still works, so point at it rather than
+        // opening something meaningless.
+        void vscode.window.showInformationMessage(
+          `GitRay: no common ancestor with #${prNumber}, so their change cannot be isolated. This happens in a shallow clone or after a force push. Compare With Collaborator's Version still works.`
+        );
+        return;
+      }
+
+      const pr = store.pullRequest(prNumber);
+      const title = `${basename(path)} — base ↔ #${prNumber} ${pr?.author ?? ''}`.trim();
+
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        baseFileUri(baseSha, path),
+        pullRequestFileUri(prNumber, path),
+        title,
+        { preview: true }
+      );
+    }),
+
+    /**
      * Diff a file against the mainline's copy of it.
      *
      * Pinned to the tip GitRay analyzed, not to `origin/<branch>`: the indicators and the
@@ -213,6 +281,45 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
         repository.uriFor(path),
         mainlineFileUri(mainline.tip, path),
         `${basename(path)} — yours ↔ ${mainline.branch}`,
+        { preview: true }
+      );
+    }),
+
+    /**
+     * Diff what landed on the mainline, with your work left out of it.
+     *
+     * Both ends come straight out of the recorded mainline state: `base` is where your
+     * branch left, `tip` is where the branch is now, and everything between them is what
+     * arrived while you were away. No merge base is computed here — the sync engine already
+     * did it, and recomputing risks answering with a different commit than the indicators.
+     */
+    vscode.commands.registerCommand('gitray.diffMainlineChange', async (raw?: unknown) => {
+      const { path } = resolve(raw);
+      if (!path) {
+        void vscode.window.showInformationMessage('GitRay: open a file to compare it.');
+        return;
+      }
+
+      const mainline = store.mainline();
+      if (!mainline) {
+        void vscode.window.showInformationMessage(
+          'GitRay: the mainline has not been read yet. Try refreshing.'
+        );
+        return;
+      }
+
+      if (mainline.base === mainline.tip) {
+        void vscode.window.showInformationMessage(
+          `GitRay: nothing has landed on \`${mainline.branch}\` since your branch left it.`
+        );
+        return;
+      }
+
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        baseFileUri(mainline.base, path),
+        mainlineFileUri(mainline.tip, path),
+        `${basename(path)} — base ↔ ${mainline.branch}`,
         { preview: true }
       );
     }),

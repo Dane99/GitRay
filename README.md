@@ -174,7 +174,12 @@ ambient → collisions only → off from the command palette.
   files by how contested they are, including files whose only claimant already merged;
   *Lanes* shows each pull request as a row of file blocks sized by change volume.
 - **Compare** — open a real VS Code diff of a collaborator's version of a file, or the
-  mainline's, against yours — served from the local ref.
+  mainline's, against yours — served from the local ref. **Their change** does the same with
+  the common ancestor on the left instead of your working copy, so what you see is their
+  edit alone rather than yours and theirs interleaved. The pair is deliberate: your copy on
+  the left is what shows whether their change lands on yours, the ancestor is what shows
+  what they actually wrote, and one diff cannot answer both. Note that the second view is in
+  ancestor coordinates, so its line numbers are not your buffer's.
 
 ### Muting
 

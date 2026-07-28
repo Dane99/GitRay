@@ -19,9 +19,11 @@ import type { ChangeRegion, MainlineCommit, PullRequest, ResolvedRegion } from '
 const ENABLED_COMMANDS = [
   'gitray.openPullRequest',
   'gitray.diffWithPullRequest',
+  'gitray.diffPullRequestChange',
   'gitray.checkoutPullRequest',
   'gitray.mutePullRequest',
-  'gitray.diffWithMainline'
+  'gitray.diffWithMainline',
+  'gitray.diffMainlineChange'
 ];
 
 const MAX_PREVIEW_LINES = 14;
@@ -100,6 +102,10 @@ function appendPullRequestRegion(
     // rather than at the top of the pull request. See githubUrls.ts.
     `[Open PR](command:gitray.openPullRequest?${args()} "Open #${prNumber} on GitHub, at this file's changes")`,
     `[Compare](command:gitray.diffWithPullRequest?${args()} "Diff their version of this file against yours")`,
+    // The pair is deliberate: Compare puts your working copy on the left and so answers
+    // "does this land on my edit", while this one puts the merge base there and answers
+    // "what did they write". One diff cannot do both.
+    `[Their change](command:gitray.diffPullRequestChange?${args()} "Diff just what they changed, without your own edits in the way")`,
     `[Check out](command:gitray.checkoutPullRequest?${args()} "Check out this branch locally")`,
     `[Mute](command:gitray.mutePullRequest?${args()} "Stop showing this pull request")`
   ];
@@ -130,7 +136,8 @@ function appendMainlineRegion(
 
   const args = encodeURIComponent(JSON.stringify([{ path: relativePath }]));
   const links = [
-    `[Compare](command:gitray.diffWithMainline?${args} "Diff the mainline's version of this file against yours")`
+    `[Compare](command:gitray.diffWithMainline?${args} "Diff the mainline's version of this file against yours")`,
+    `[What landed](command:gitray.diffMainlineChange?${args} "Diff just what landed on the mainline, without your own edits in the way")`
   ];
 
   // Only offer the pull request link when the merge actually left a number behind; a
