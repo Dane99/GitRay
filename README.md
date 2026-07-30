@@ -9,8 +9,8 @@ does not vanish from view at the moment its overlap with your work becomes real.
 is to move conflict discovery from merge time to write time, so a team can keep more
 branches in flight without paying for it later.
 
-Nothing is sent anywhere. GitRay reads pull request metadata with the GitHub sign-in VS Code
-already holds, and your local `git` for everything else.
+Your code is never sent anywhere. GitRay reads pull request metadata from GitHub with the
+sign-in VS Code already holds, and uses your local `git` for everything else.
 
 ---
 
@@ -33,6 +33,10 @@ For each open pull request `P` and file `F`:
 5. **Draw.** Their ranges are mapped into your buffer, so indicators stay anchored as you
    type above them.
 
+Adjacency counts as a collision, not a near miss. Two edits that meet at a seam with no
+line between them make git stop and ask — [verified against real merges in the test
+suite](test/integration/gitPipeline.test.ts).
+
 ### What counts as "your work"
 
 Step 3 measures against the mainline (`<remote>/<base branch>`), not against the pull
@@ -48,8 +52,9 @@ reports exactly one when a genuinely overlapping edit is made.
 Those upstream overlaps are real conflicts — for the pull request's author to rebase away.
 They are not yours, so GitRay does not put them in your gutter.
 
-If the base branch has no remote-tracking ref, GitRay falls back to the merge base and
-accepts the extra noise rather than going silent.
+If the mainline branch is unknown locally — no copy of GitRay's own and no remote-tracking
+ref — GitRay falls back to the merge base and accepts the extra noise rather than going
+silent.
 
 ### When the pull request has already merged
 
@@ -89,13 +94,12 @@ event — and otherwise at most every five minutes, which covers a direct push t
 Its ref lives in the same isolated namespace as everything else: your `refs/remotes/*` are
 untouched, so `git status` never starts reporting a "behind" count you did not ask for.
 
-Adjacency counts as a collision, not a near miss. Two edits that meet at a seam with no
-line between them make git stop and ask — [verified against real merges in the test
-suite](test/integration/gitPipeline.test.ts).
-
-Everything after step 1 is local. There is no server and no telemetry. GitRay stores no
-credentials of its own: step 1 runs on a token the editor hands over for the length of one
-request and GitRay never writes down.
+Whether the ranges come from a pull request or the mainline, all of the above happens
+locally. The only network traffic is one metadata request to GitHub per refresh — which
+pull requests are open, which files they touch — plus the fetches described in
+[What it does to your repository](#what-it-does-to-your-repository). There is no server and
+no telemetry, and GitRay stores no credentials of its own: the metadata request runs on a
+token the editor hands over for the length of one request and GitRay never writes down.
 
 ## Reading the indicators
 
@@ -163,9 +167,9 @@ ambient → collisions only → off from the command palette.
 - **GitRay sidebar** — `main has moved under you` when the mainline is ahead, then
   *Collisions* (hidden entirely when empty), then every open pull request with its files,
   and finally *Muted* — collapsed, and only when something is muted.
-- **Explorer badges** — collaborator count per file, `↧` when something that already merged
-  touches it, or `⟂` when either collides with you. Folders inherit the badge, so a
-  collapsed tree still shows where the activity is.
+- **Explorer badges** — collaborator count per file, `↧` when the only claim on a file is
+  work that already merged, or `⟂` when either collides with you. Folders inherit the
+  badge, so a collapsed tree still shows where the activity is.
 - **Status bar** — `$(radio-tower) 5 $(git-merge) 12 ⟂ 2`: open pull requests, commits the
   mainline is ahead by, collisions. Each part is dropped when it is zero, and the item
   takes a warning background only when something actually overlaps your work.
@@ -236,9 +240,11 @@ default HTTPS port, since GitRay compares hosts with the port stripped and so ca
 one on, say, `:8443`.
 
 GitRay degrades rather than disappearing, and what survives depends on what is missing.
-A shallow clone, a failed fetch, or `gitray.fetchPullRequestRefs` turned off costs you the
-line-level indicators only: the file-level ones come from the pull request list rather than
-from any local diff, so they are unaffected. Missing credentials or a GitHub remote takes
+A failed fetch or `gitray.fetchPullRequestRefs` turned off costs you the line-level
+indicators only: the file-level ones come from the pull request list rather than from any
+local diff, so they are unaffected. A shallow clone loses a little more — without full
+history there may be no reliable merge base, so line-level indicators and mainline drift
+are both suspended until `git fetch --unshallow`. Missing credentials or a GitHub remote takes
 that list away too, and what keeps working is mainline drift, which is plain git — though
 badges from the last successful refresh stay on screen, which is what an expired login or a
 dropped connection looks like. Either way the reason is stated in the sidebar instead of
@@ -253,7 +259,8 @@ in this order:
 
 1. `gitray.remote`, if you set it. Set it to a remote that does not exist and the sidebar
    says so, rather than quietly falling back to something that answers.
-2. Otherwise the conventional name preference: `upstream`, then `github`, then `origin`.
+2. Otherwise the conventional name preference: `upstream`, then `github`, then `origin` —
+   and when none of those names exist, the first remote git lists.
 
 GitRay does not ask GitHub which repository your fork came from, deliberately: the answer
 is often a repository your clone has no remote for, and the pull request heads still have to
@@ -339,7 +346,7 @@ minutes if the remote is unreachable.
 | `gitray.mainline.trackDrift` | `true` | Flag work that already merged into the mainline and touches your lines. See [When the pull request has already merged](#when-the-pull-request-has-already-merged). |
 | `gitray.mainline.branch` | `""` | Branch to treat as the mainline. Empty means the remote's default branch, falling back to whatever your open pull requests target. |
 | `gitray.mutedPullRequests` / `gitray.mutedAuthors` | `[]` | Pull request numbers and GitHub logins to hide. Usually written for you by the mute commands and reviewable in the sidebar's [Muted](#muting) section. Applies to open pull requests only — muting does not suppress mainline drift, since your next rebase does not care who you muted. |
-| `gitray.ignoreGlobs` | lockfiles, `dist/**`, minified assets | Files matching these globs never get indicators. |
+| `gitray.ignoreGlobs` | lockfiles, build output, minified assets | Files matching these globs never get indicators. |
 | `gitray.maxRegionsPerFile` | `400` | Cap on tracked change regions per file. Files past the cap fall back to a file-level indicator. |
 
 `GitRay: Toggle Editor Indicators` cycles ambient → collisions only → off, so "quiet but
