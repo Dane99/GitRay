@@ -78,7 +78,7 @@ function fakeRepository() {
     uriFor: (path: string) => Uri.file(`${ROOT}/${path}`),
     relativePath: () => undefined,
     git: { headSha: async () => 'head1' },
-    github: { pullRequestUrl: () => undefined, canCheckout: async () => false }
+    github: { pullRequestUrl: async () => undefined }
   } as never;
 }
 
@@ -287,7 +287,7 @@ test('a muted author with nothing open says so rather than looking broken', asyn
 });
 
 test('the section reappears when the settings change under it', async () => {
-  // Muting while gh is unreachable lands no sync, so the store never fires. Without the
+  // Muting while GitHub is unreachable lands no sync, so the store never fires. Without the
   // configuration listener the row would not appear until something else happened to
   // repaint the view.
   const h = harness();

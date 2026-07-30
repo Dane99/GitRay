@@ -36,13 +36,13 @@ const NEVER = 0;
 export class SyncEngine {
   private login: string | undefined;
   private probed = false;
-  /** The remote the settled transport was probed against. See `detectRemoteChange`. */
+  /** The remote the last successful probe was made against. See `detectRemoteChange`. */
   private probedRemote: string | undefined;
   private lastHeadSha: string | undefined;
   private mainlineBranch: string | undefined;
   /** When the mainline fetch was last *attempted* — success or not. See below. */
   private mainlineFetchedAt = NEVER;
-  /** Set by the developer fixture command; bypasses gh entirely. */
+  /** Set by the developer fixture command; bypasses GitHub entirely. */
   private fixture: PullRequest[] | undefined;
 
   constructor(
@@ -123,9 +123,7 @@ export class SyncEngine {
       this.probed = true;
       this.probedRemote = await this.repository.remotes.name();
       log.info(
-        `connected to ${state.nameWithOwner} as ${state.login} via ${
-          state.transport === 'cli' ? 'the GitHub CLI' : 'your editor’s GitHub sign-in'
-        }`
+        `connected to ${state.nameWithOwner} as ${state.login} via your editor’s GitHub sign-in`
       );
     }
 
@@ -137,8 +135,8 @@ export class SyncEngine {
     } catch (error) {
       // A session that expired, a token that was revoked, a network that went away — all
       // of them arrive here rather than at the probe, because the probe already succeeded
-      // once. Re-probing next pass is what lets the CLI take over from a dead session, or
-      // the other way round, without a reload.
+      // once. Re-probing next pass is what lets a fresh sign-in take over from a dead
+      // session without a reload.
       this.probed = false;
       log.warn(
         `could not list pull requests: ${error instanceof Error ? error.message : String(error)}`
@@ -157,7 +155,10 @@ export class SyncEngine {
   private degrade(state: GitHubFailure): undefined {
     switch (state.kind) {
       case 'signed-out':
-        this.store.setDegraded(state.canSignIn ? 'signed-out' : 'gh-required', state.message);
+        this.store.setDegraded(
+          state.canSignIn ? 'signed-out' : 'host-unsupported',
+          state.message
+        );
         break;
       case 'offline':
         this.store.setDegraded('offline', `GitHub is unreachable — ${state.message}`);
@@ -416,7 +417,7 @@ export class SyncEngine {
   }
 
   /**
-   * Re-probe when the remote moves out from under a settled transport.
+   * Re-probe when the remote moves out from under a probe that already settled.
    *
    * `gitray.remote` is a live setting and `git remote add upstream …` is a live repository
    * change, so the answer this engine fetches refs from can change without a reload. The

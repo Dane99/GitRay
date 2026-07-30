@@ -18,6 +18,7 @@ import { isMutedAuthor, readConfig, updateSetting } from '../core/config.js';
 import type { Store } from '../model/store.js';
 import { prRef } from '../providers/git.js';
 import { pullRequestFileUrl } from '../providers/githubUrls.js';
+import { describeUnusableRemote } from '../providers/remoteSelection.js';
 import { signIn } from '../providers/session.js';
 import type { RepositorySession } from '../session.js';
 import type { Workspace } from '../workspace.js';
@@ -220,16 +221,16 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       if (prNumber === undefined) return;
 
       // Muted pull requests are openable too — that is how you decide whether to unmute
-      // one — and their record still carries the url, so this need not shell out to gh.
+      // one — and their record still carries the url.
       const pr = store.pullRequest(prNumber) ?? store.mutedPullRequest(prNumber);
-      const url = pr?.url || session.repository.github.pullRequestUrl(prNumber);
-      if (url) {
-        await vscode.env.openExternal(vscode.Uri.parse(path ? pullRequestFileUrl(url, path) : url));
+      const url = pr?.url || (await session.repository.github.pullRequestUrl(prNumber));
+      if (!url) {
+        void vscode.window.showWarningMessage(
+          `GitRay: nothing here knows which repository pull request #${prNumber} belongs to.`
+        );
         return;
       }
-      // Nothing local knows where this one lives; gh can look it up. It opens the pull
-      // request itself — the redirect is all gh offers — so the file anchor is lost here.
-      await session.repository.github.openInBrowser(prNumber);
+      await vscode.env.openExternal(vscode.Uri.parse(path ? pullRequestFileUrl(url, path) : url));
     }),
 
     /**
@@ -238,8 +239,16 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
      * The one place GitRay is allowed to open an authentication dialog, and it takes an
      * explicit click on the sidebar's signed-out row to get here. Polling never asks.
      */
-    vscode.commands.registerCommand('gitray.signIn', async () => {
-      if (!(await signIn())) return;
+    vscode.commands.registerCommand('gitray.signIn', async (raw?: unknown) => {
+      // Which host, because the editor holds separate sessions for github.com and for an
+      // Enterprise server. The sidebar row carries the repository it belongs to, and that is
+      // the only thing that answers this in a workspace holding both — the active editor
+      // says which file you were reading, not which row you clicked. The palette carries
+      // nothing, so it falls back to the active repository and then to github.com.
+      const { root } = toArgs(raw);
+      const session = (root ? workspace.sessionAt(root) : undefined) ?? workspace.active();
+      const host = await session?.repository.github.host();
+      if (!(await signIn(host))) return;
       // One account signs every repository in, so every one of them gets the news. The
       // engine re-probes on every pass while it is degraded, so this only brings the
       // answer forward — but waiting a minute after signing in reads like nothing happened.
@@ -403,20 +412,14 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       if (prNumber === undefined) return;
 
       const pr = store.pullRequest(prNumber);
-      if (!pr) return;
+      if (!pr?.headRefName) return;
 
-      // The one thing the editor's GitHub session cannot stand in for. Checking out a fork
-      // head needs a ref that does not exist on `origin`, and it needs the branch wired up
-      // so a later push reaches the contributor — gh does both, and a local branch cut from
-      // GitRay's read-only ref would look identical while pushing to the wrong place.
-      if (!(await repository.github.canCheckout())) {
-        const choice = await vscode.window.showInformationMessage(
-          'GitRay: checking out a pull request branch needs the GitHub CLI (gh), installed and signed in. Everything else works without it.',
-          'Open on GitHub'
-        );
-        if (choice === 'Open on GitHub') {
-          await vscode.commands.executeCommand('gitray.openPullRequest', { prNumber });
-        }
+      // The head is fetched from the *base* repository even for a fork's branch, because
+      // that is where GitHub publishes `refs/pull/<n>/head` — so this needs the same remote
+      // everything else does, and fails as itself when there is not one.
+      const remote = await repository.remotes.choose();
+      if (remote.kind !== 'ok') {
+        void vscode.window.showWarningMessage(`GitRay: ${describeUnusableRemote(remote)}`);
         return;
       }
 
@@ -430,7 +433,17 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       }
 
       try {
-        await repository.github.checkout(pr.number);
+        await repository.git.checkoutPullRequest({
+          prNumber: pr.number,
+          branch: pr.headRefName,
+          remote: remote.name,
+          headRefName: pr.headRefName,
+          isCrossRepository: pr.isCrossRepository === true,
+          // Only when the pull request says maintainers may push. Wiring a branch to a fork
+          // we cannot write to would turn every `git push` into a permission error, and the
+          // read-only pull ref is the honest thing to track instead.
+          pushUrl: pr.maintainerCanModify ? pr.headRepositoryUrl : undefined
+        });
         void vscode.window.showInformationMessage(`GitRay: checked out \`${pr.headRefName}\`.`);
       } catch (error) {
         void vscode.window.showErrorMessage(

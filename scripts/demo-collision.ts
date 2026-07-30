@@ -6,8 +6,12 @@
  * result is a real overlap GitRay should flag — handy for seeing the collision treatment
  * without waiting for a colleague to touch the same code as you.
  *
- *   npx tsx scripts/demo-collision.ts <path-to-repo>
+ *   GITHUB_TOKEN=... npx tsx scripts/demo-collision.ts <path-to-repo>
  *   npx tsx scripts/demo-collision.ts <path-to-repo> --revert
+ *
+ * The extension borrows its token from the editor's GitHub session, which nothing outside
+ * the editor can reach — so this reads one from the environment instead. It is the only
+ * place in the repository that handles a token directly, and it is not shipped.
  *
  * Two details here mirror what the extension has to get right, and both are easy to get
  * wrong: hunk line numbers are relative to the merge base rather than to your checkout,
@@ -21,7 +25,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Git, prRef } from '../src/providers/git.js';
-import { Gh } from '../src/providers/gh.js';
+import { GitHubApi } from '../src/providers/githubApi.js';
 import { RemoteSelector } from '../src/providers/remoteSelection.js';
 import { alignLines, splitLines } from '../src/model/lineMap.js';
 
@@ -40,28 +44,31 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const git = new Git(repo);
-  const gh = new Gh(repo);
-
-  const state = await gh.probe();
-  if (state.kind !== 'ok') {
-    console.error(`cannot read this repository: ${state.kind}`);
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (!token) {
+    console.error('set GITHUB_TOKEN to a token that can read the repository');
     return 1;
   }
-  console.log(`${state.nameWithOwner} as ${state.login}`);
+
+  const git = new Git(repo);
 
   // The same resolution the extension does, for the same reason: in a fork the pull requests
   // are on `upstream` and fetching them from `origin` silently gets nothing.
   const remotes = new RemoteSelector(git, () => '');
-  remotes.setBaseRepository({ nameWithOwner: state.nameWithOwner, host: state.host });
   const remote = await remotes.name();
-  if (!remote) {
-    console.error('this repository has no remote to fetch from');
+  const repository = await remotes.repository();
+  if (!remote || !repository) {
+    console.error('this repository has no remote pointing at GitHub');
     return 1;
   }
   console.log(`fetching from ${remote}`);
 
-  const pullRequests = await gh.listPullRequests(30, false);
+  const api = new GitHubApi(repository, { supports: () => true, getToken: async () => token });
+
+  const state = await api.probe();
+  console.log(`${state.nameWithOwner} as ${state.login}`);
+
+  const pullRequests = await api.listPullRequests(30, false);
   console.log(`${pullRequests.length} open pull requests`);
 
   // Match the extension's own fetch decision: compare the ref, not merely whether the

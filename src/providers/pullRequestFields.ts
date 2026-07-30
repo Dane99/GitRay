@@ -1,39 +1,21 @@
 /**
  * The pull request metadata GitRay asks for, and how it lands in the model.
  *
- * Two transports fetch it — the `gh` CLI and the GraphQL API directly — and they return
- * the same fields, because `gh pr list --json` is a thin wrapper over the same query. The
- * shape and its mapping live here so the two cannot drift into disagreeing about what a
- * missing author or an untitled pull request means.
+ * GitHub's answer is a loose bag of optionals — a deleted account has no author, a deleted
+ * fork has no head repository — and every surface downstream wants a definite record. The
+ * mapping lives here alone so there is one place that decides what a missing field means.
  */
 
 import { MAX_TRACKED_PULL_REQUESTS, type PullRequest, type PullRequestFile } from '../core/types.js';
 
-export const PR_FIELDS = [
-  'number',
-  'title',
-  'author',
-  'headRefName',
-  'headRefOid',
-  'baseRefName',
-  'isDraft',
-  'updatedAt',
-  'url',
-  'additions',
-  'deletions',
-  'files'
-] as const;
-
 /**
  * How many pull requests to ask for before trimming.
  *
- * `gh pr list` returns newest-created first and has no sort flag, so asking for exactly
- * the configured maximum could miss an old pull request that someone pushed to this
- * morning. Over-fetching and sorting by updatedAt locally costs nothing extra — it is
- * still one request — and gets the genuinely active ones. The GraphQL path can sort
- * server-side, but it over-fetches to the same depth so that both transports answer a
- * given repository identically, drafts and all — which is only true while this is exactly
- * the page both of them are limited to.
+ * Drafts are filtered after the response arrives, and the muted ones after that, so asking
+ * for exactly the configured maximum would let a handful of drafts push real pull requests
+ * off the end of the list. Over-fetching to the page limit costs nothing extra — it is
+ * still one request — and makes the answer depend on the repository rather than on how
+ * many of its open pull requests happen to be hidden.
  */
 export const OVERFETCH = MAX_TRACKED_PULL_REQUESTS;
 
@@ -55,6 +37,10 @@ export interface RawPullRequest {
   url?: string;
   additions?: number;
   deletions?: number;
+  isCrossRepository?: boolean;
+  maintainerCanModify?: boolean;
+  /** Null when the fork the branch lived in has since been deleted. */
+  headRepository?: { url?: string } | null;
   files?: RawFile[] | null;
 }
 
@@ -80,6 +66,9 @@ export function toPullRequest(raw: RawPullRequest): PullRequest {
     url: raw.url ?? '',
     additions: raw.additions ?? 0,
     deletions: raw.deletions ?? 0,
+    isCrossRepository: raw.isCrossRepository === true,
+    maintainerCanModify: raw.maintainerCanModify === true,
+    headRepositoryUrl: raw.headRepository?.url || undefined,
     files
   };
 }

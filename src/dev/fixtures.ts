@@ -1,7 +1,7 @@
 /**
  * Offline fixture mode.
  *
- * Loads a JSON pull request set in place of `gh`, so every surface can be exercised —
+ * Loads a JSON pull request set in place of GitHub, so every surface can be exercised —
  * and the visual design iterated on — with no network, no GitHub account, and no waiting
  * for a colleague to push something. Line-level indicators still need real refs, so a
  * fixture drives the file-level surfaces: the tree, badges, status bar, and radar.

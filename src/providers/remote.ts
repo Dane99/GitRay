@@ -1,9 +1,8 @@
 /**
  * Which GitHub repository a remote URL points at.
  *
- * The `gh` CLI works this out for itself, so GitRay never had to. The editor's GitHub
- * session does not: it hands over a token and nothing else, which leaves the question of
- * *whose* pull requests to ask for. That answer is sitting in a remote URL — which remote
+ * The editor's GitHub session hands over a token and nothing else, which leaves the question
+ * of *whose* pull requests to ask for. That answer is sitting in a remote URL — which remote
  * is remoteSelection.ts's problem, not this module's.
  *
  * Parsing is deliberately narrow. A URL that does not resolve to a plain `owner/name` on a
@@ -20,7 +19,7 @@ export interface RemoteRepository {
   nameWithOwner: string;
 }
 
-/** The one host the editor's built-in GitHub session can speak for. */
+/** The host the editor's built-in GitHub provider speaks for without any configuration. */
 export const GITHUB_HOST = 'github.com';
 
 /** Owner and repository names GitHub will actually accept. */
@@ -88,7 +87,19 @@ export function parseRemoteUrl(raw: string): RemoteRepository | undefined {
   return { host, owner, name, nameWithOwner: `${owner}/${name}` };
 }
 
-/** Is this a repository the editor's own GitHub session can be used against? */
-export function isGitHubDotCom(remote: RemoteRepository): boolean {
-  return remote.host === GITHUB_HOST;
+/**
+ * The host a bare URL names, normalised the way a remote's host is.
+ *
+ * For settings rather than remotes — `github-enterprise.uri` is a server address with no
+ * repository path on it, so `parseRemoteUrl` rejects it. Comparing the two has to happen
+ * after the same normalisation, or a trailing slash or a port decides that the Enterprise
+ * server the editor is signed in to is a different one from the remote.
+ */
+export function hostOf(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+
+  const scheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(.*)$/.exec(trimmed);
+  const authority = (scheme ? scheme[1] : trimmed).split('/')[0];
+  return normaliseHost(authority) || undefined;
 }

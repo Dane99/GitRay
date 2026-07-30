@@ -32,7 +32,7 @@ export type ChangeKind = 'add' | 'modify' | 'delete';
 /** How a collaborator's change relates to your own uncommitted work. */
 export type Severity = 'ambient' | 'nearMiss' | 'collision';
 
-/** Pull request metadata, as reported by `gh pr list`. */
+/** Pull request metadata, as GitHub reports it. */
 export interface PullRequest {
   number: number;
   title: string;
@@ -45,6 +45,17 @@ export interface PullRequest {
   url: string;
   additions: number;
   deletions: number;
+  /**
+   * Whether the head branch lives in a fork rather than in the base repository.
+   *
+   * Only checkout cares, and it cares a great deal: a fork's branch has no ref on the base
+   * repository to track, so the head has to come from `refs/pull/<n>/head` instead.
+   */
+  isCrossRepository?: boolean;
+  /** Whether the base repository's maintainers may push to the head branch. */
+  maintainerCanModify?: boolean;
+  /** The head repository's clone URL, absent when the fork has since been deleted. */
+  headRepositoryUrl?: string;
   /** Repo-relative POSIX paths this PR touches, from the cheap file-level index. */
   files: PullRequestFile[];
 }
@@ -211,8 +222,8 @@ export const MAX_LOGGED_COMMITS = 20;
  * refresh costs one request is worth more than the hundred-and-first pull request, which no
  * editor surface could say anything useful about anyway.
  *
- * It lives here because it binds three things that must agree — how deep the CLI transport
- * over-fetches, what the API transport asks for, and the ceiling `gitray.maxPullRequests`
+ * It lives here because it binds three things that must agree — how deep a request
+ * over-fetches, how many pull requests it asks for, and the ceiling `gitray.maxPullRequests`
  * is clamped to. Letting them drift is how the same repository comes to show a different
  * number of pull requests on two machines.
  */
@@ -244,8 +255,12 @@ export function behindMainline(state: MainlineState | undefined): BehindMainline
 export type DegradedReason =
   /** No GitHub credentials, and the editor's own sign-in would supply them. */
   | 'signed-out'
-  /** No GitHub credentials, and only the `gh` CLI can supply them — an Enterprise host. */
-  | 'gh-required'
+  /**
+   * No GitHub credentials, and signing in would not help: the editor has no authentication
+   * provider for this host. An Enterprise remote with `github-enterprise.uri` unset, or set
+   * to a different server.
+   */
+  | 'host-unsupported'
   | 'not-a-repo'
   | 'no-remote'
   | 'fetch-failed'

@@ -1,13 +1,13 @@
 /**
- * GitHub metadata over HTTPS, for machines without the `gh` CLI.
+ * GitHub metadata over HTTPS.
  *
- * The same one request per poll the CLI path makes, against the same GraphQL endpoint,
- * with a token GitRay never stores, never writes to disk, and never logs: it is borrowed
- * from the editor's own GitHub session at the moment of the call and dropped again. This
- * module knows nothing about where the token comes from — that is the caller's business
- * through `TokenSource`, which is also what keeps this file testable without an editor.
+ * One request per poll, with a token GitRay never stores, never writes to disk, and never
+ * logs: it is borrowed from the editor's own GitHub session at the moment of the call and
+ * dropped again. This module knows nothing about where the token comes from — that is the
+ * caller's business through `TokenSource`, which is also what keeps this file testable
+ * without an editor.
  *
- * Metadata only, exactly as before. Every byte of file content still comes from local git.
+ * Metadata only. Every byte of file content comes from local git.
  */
 
 import { MAX_TRACKED_PULL_REQUESTS, type PullRequest } from '../core/types.js';
@@ -17,17 +17,26 @@ import {
   type RawFile,
   type RawPullRequest
 } from './pullRequestFields.js';
-import type { RemoteRepository } from './remote.js';
+import { GITHUB_HOST, type RemoteRepository } from './remote.js';
 
 /** Where a token comes from, so this module does not have to care. */
 export interface TokenSource {
   /**
-   * A GitHub token, or undefined when the user has no session.
+   * Whether a token for this host could exist at all.
+   *
+   * Distinct from "there is no session right now": a host nobody has configured a provider
+   * for will never produce one, and the sidebar has to offer a different fix for that than
+   * a sign-in button that would open a dialog and achieve nothing.
+   */
+  supports(host: string): boolean;
+
+  /**
+   * A GitHub token for a host, or undefined when the user has no session for it.
    *
    * `interactive` decides whether the user may be asked to sign in. Polling must never
    * ask — a dialog that appears on a timer is worse than the missing feature.
    */
-  getToken(options: { interactive: boolean }): Promise<string | undefined>;
+  getToken(options: { host: string; interactive: boolean }): Promise<string | undefined>;
 }
 
 /** Why a request failed, in the terms the UI reasons about. */
@@ -45,8 +54,27 @@ export class GitHubApiError extends Error {
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
-const ENDPOINT = 'https://api.github.com/graphql';
 const TIMEOUT_MS = 45_000;
+
+/**
+ * Where a host's GraphQL lives.
+ *
+ * github.com puts it on a separate `api.` domain; every Enterprise install serves it from
+ * the same host the repositories are on, under `/api`. Deriving it rather than hardcoding
+ * one is what lets a single client speak to either.
+ *
+ * Always port 443, and knowingly. `RemoteRepository.host` has the port stripped, because
+ * that is what makes `host:443` and `host` the same repository everywhere else — so an
+ * Enterprise server on a non-standard port cannot be addressed from here at all. Nobody has
+ * asked for one; carrying the port would mean carrying it through repository identity, host
+ * comparison against `github-enterprise.uri`, and pull request URLs too, which is a real
+ * change rather than a line here.
+ */
+function endpointFor(host: string): string {
+  return host === GITHUB_HOST
+    ? 'https://api.github.com/graphql'
+    : `https://${host}/api/graphql`;
+}
 
 /** Files per pull request. Beyond this the pull request falls back to file-level counts. */
 const FILE_LIMIT = 100;
@@ -58,9 +86,15 @@ query GitRayProbe($owner: String!, $name: String!) {
 }`;
 
 /**
- * The same fields `gh pr list --json` asks for, because gh asks GraphQL for them too.
- * `orderBy` is the one thing gh cannot do: sorting server-side means the pull requests
- * that come back are the ones somebody touched recently.
+ * Everything GitRay needs about a pull request, in one page.
+ *
+ * `orderBy` is what makes a single page enough: sorting server-side means the pull requests
+ * that come back are the ones somebody touched recently, rather than the oldest ones that
+ * happen to still be open.
+ *
+ * The three head-repository fields are only for checkout, and none of them can be derived
+ * locally: whether the branch lives in a fork decides which ref even exists to fetch, and
+ * whether we may push to it decides where the checked-out branch is wired to send commits.
  */
 const LIST_QUERY = `
 query GitRayPullRequests($owner: String!, $name: String!, $limit: Int!, $files: Int!) {
@@ -82,6 +116,9 @@ query GitRayPullRequests($owner: String!, $name: String!, $limit: Int!, $files: 
         url
         additions
         deletions
+        isCrossRepository
+        maintainerCanModify
+        headRepository { url }
         files(first: $files) {
           nodes { path additions deletions }
         }
@@ -173,14 +210,14 @@ export class GitHubApi {
    * instead of a stack trace.
    */
   private async query<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const token = await this.tokens.getToken({ interactive: false });
+    const token = await this.tokens.getToken({ host: this.repo.host, interactive: false });
     if (!token) {
       throw new GitHubApiError('signed-out', 'Sign in to GitHub to see open pull requests.');
     }
 
     let response: Response;
     try {
-      response = await this.fetchImpl(ENDPOINT, {
+      response = await this.fetchImpl(endpointFor(this.repo.host), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${token}`,
@@ -223,7 +260,7 @@ export class GitHubApi {
   }
 }
 
-/** GraphQL nests its lists one level deeper than gh's JSON does. */
+/** GraphQL nests every list inside a `nodes` wrapper; the model wants the list itself. */
 function flatten(node: GraphQlPullRequest): RawPullRequest {
   const { files, ...rest } = node;
   const nodes = files?.nodes ?? [];

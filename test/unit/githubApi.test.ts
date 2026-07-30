@@ -1,10 +1,10 @@
 /**
- * The no-CLI transport.
+ * Reading what GitHub sends back.
  *
  * Everything here runs against a fake `fetch`, because the point is not that GitHub works —
- * it is that GitRay reads what GitHub sends back the same way the `gh` path does, and that
- * every failure lands as a state the sidebar knows how to explain. A signed-out user who is
- * told "offline" goes looking for a network problem they do not have.
+ * it is that GitRay turns each of its answers into a definite record, and every failure into
+ * a state the sidebar knows how to explain. A signed-out user who is told "offline" goes
+ * looking for a network problem they do not have.
  */
 
 import { test } from 'node:test';
@@ -19,8 +19,8 @@ const repo: RemoteRepository = {
   nameWithOwner: 'Dane99/GitRay'
 };
 
-const signedIn: TokenSource = { getToken: async () => 'token-value' };
-const signedOut: TokenSource = { getToken: async () => undefined };
+const signedIn: TokenSource = { supports: () => true, getToken: async () => 'token-value' };
+const signedOut: TokenSource = { supports: () => true, getToken: async () => undefined };
 
 interface Captured {
   body: { query: string; variables: Record<string, unknown> };
@@ -68,7 +68,7 @@ test('a probe asks for the viewer and the repository in one request', async () =
   assert.deepEqual(transport.calls[0].body.variables, { owner: 'Dane99', name: 'GitRay' });
 });
 
-test('pull requests come back in the same shape the gh path produces', async () => {
+test('a pull request arrives as a definite record, whatever GraphQL nested it in', async () => {
   const transport = respond({
     data: {
       repository: {
@@ -101,6 +101,84 @@ test('pull requests come back in the same shape the gh path produces', async () 
   assert.equal(pr.author, 'rita');
   // The nested `files.nodes` is GraphQL's shape; the model must never see it.
   assert.deepEqual(pr.files, [{ path: 'src/a.ts', additions: 12, deletions: 3 }]);
+  // Absent head-repository fields must read as "not a fork, not pushable" rather than as
+  // undefined: checkout branches on them, and undefined would wire a branch to the wrong
+  // place on any response that happened to omit them.
+  assert.equal(pr.isCrossRepository, false);
+  assert.equal(pr.maintainerCanModify, false);
+  assert.equal(pr.headRepositoryUrl, undefined);
+});
+
+test('a fork pull request carries where its branch lives, for checkout', async () => {
+  const transport = respond({
+    data: {
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              number: 8,
+              title: 'From a fork',
+              author: { login: 'rita' },
+              headRefName: 'patch-1',
+              headRefOid: 'b'.repeat(40),
+              baseRefName: 'main',
+              isDraft: false,
+              updatedAt: '2026-07-21T10:00:00Z',
+              url: 'https://github.com/Dane99/GitRay/pull/8',
+              additions: 1,
+              deletions: 0,
+              isCrossRepository: true,
+              maintainerCanModify: true,
+              headRepository: { url: 'https://github.com/rita/GitRay' },
+              files: { nodes: [{ path: 'src/a.ts', additions: 1, deletions: 0 }] }
+            }
+          ]
+        }
+      }
+    }
+  });
+
+  const [pr] = await api(transport).listPullRequests(30, false);
+
+  assert.equal(pr.isCrossRepository, true);
+  assert.equal(pr.maintainerCanModify, true);
+  assert.equal(pr.headRepositoryUrl, 'https://github.com/rita/GitRay');
+});
+
+test('a deleted fork leaves no push target rather than an empty one', async () => {
+  // GitHub nulls `headRepository` once the fork is gone. An empty string here would be
+  // handed to `git config branch.x.remote` and configure a branch that pushes nowhere.
+  const transport = respond({
+    data: {
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              number: 9,
+              title: 'Fork since deleted',
+              author: { login: 'rita' },
+              headRefName: 'patch-2',
+              headRefOid: 'c'.repeat(40),
+              baseRefName: 'main',
+              isDraft: false,
+              updatedAt: '2026-07-22T10:00:00Z',
+              url: 'https://github.com/Dane99/GitRay/pull/9',
+              additions: 1,
+              deletions: 0,
+              isCrossRepository: true,
+              maintainerCanModify: true,
+              headRepository: null,
+              files: { nodes: [{ path: 'src/a.ts', additions: 1, deletions: 0 }] }
+            }
+          ]
+        }
+      }
+    }
+  });
+
+  const [pr] = await api(transport).listPullRequests(30, false);
+
+  assert.equal(pr.headRepositoryUrl, undefined);
 });
 
 test('drafts are excluded unless asked for, and the rest sort by most recently updated', async () => {

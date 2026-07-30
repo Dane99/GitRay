@@ -71,7 +71,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
       this.workspace.onDidChange(() => this.refresh()),
       // The Muted section reads the settings directly, so it is the one part of this view
       // that can change without the store changing — someone editing settings.json by hand,
-      // or a mute applied while gh is unreachable and no sync is landing.
+      // or a mute applied while GitHub is unreachable and no sync is landing.
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration('gitray')) this.refresh();
       })
@@ -328,9 +328,14 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
       item.iconPath = new vscode.ThemeIcon('sign-in');
       item.command = {
         command: 'gitray.signIn',
-        title: 'Sign in to GitHub'
+        title: 'Sign in to GitHub',
+        // The repository this row belongs to, because the account it needs depends on it.
+        // A workspace holding a github.com repository beside an Enterprise one has two rows
+        // here wanting two different sign-ins, and which file happens to be focused is no
+        // basis for choosing between them.
+        arguments: [{ root: session.repository.root }]
       };
-    } else if (status.reason === 'gh-required') {
+    } else if (status.reason === 'host-unsupported') {
       item.command = {
         command: 'gitray.showOutput',
         title: 'Show log'
@@ -553,7 +558,7 @@ export class PulseTreeProvider implements vscode.TreeDataProvider<Node>, vscode.
    * One muted pull request.
    *
    * The number is always known; the pull request behind it often is not. It may have
-   * merged, or fallen past `maxPullRequests`, or `gh` may simply be unreachable this
+   * merged, or fallen past `maxPullRequests`, or GitHub may simply be unreachable this
    * session — so the row states what it knows rather than guessing which of those happened.
    * Unmuting works either way, which is the point of showing the row at all.
    */

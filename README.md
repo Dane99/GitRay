@@ -9,9 +9,8 @@ does not vanish from view at the moment its overlap with your work becomes real.
 is to move conflict discovery from merge time to write time, so a team can keep more
 branches in flight without paying for it later.
 
-Nothing is sent anywhere. GitRay reads pull request metadata with credentials already on
-your machine — your `gh` CLI, or the GitHub sign-in VS Code already holds — and your local
-`git` for everything else.
+Nothing is sent anywhere. GitRay reads pull request metadata with the GitHub sign-in VS Code
+already holds, and your local `git` for everything else.
 
 ---
 
@@ -95,8 +94,8 @@ line between them make git stop and ask — [verified against real merges in the
 suite](test/integration/gitPipeline.test.ts).
 
 Everything after step 1 is local. There is no server and no telemetry. GitRay stores no
-credentials of its own: step 1 runs through `gh`, or through a token the editor hands over
-for the length of one request and GitRay never writes down.
+credentials of its own: step 1 runs on a token the editor hands over for the length of one
+request and GitRay never writes down.
 
 ## Reading the indicators
 
@@ -223,18 +222,18 @@ regardless of who wrote it, so mainline drift ignores both lists.
 
 - `git`, with a full (non-shallow) clone
 - VS Code 1.90+
-- A way to read GitHub metadata, either of:
-  - VS Code's own GitHub sign-in — nothing to install; the sidebar offers it when needed
-  - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated — `gh auth login`
+- VS Code's own GitHub sign-in — nothing to install; the sidebar offers it when needed
 
-`gh` is used whenever it is installed and logged in: it costs GitRay no permission of its
-own, and it already understands GitHub Enterprise hosts and fork base repositories. Without
-it, GitRay borrows the editor's GitHub session for the same single metadata request. The
-token is held for the duration of that request and never stored, and GitRay only ever reads.
+There is no CLI to install and no token to paste. GitRay borrows the GitHub session the
+editor already holds for a single metadata request per refresh: the token is handed over for
+the duration of that request, never stored, and only ever used to read.
 
-Two things still need `gh`: GitHub Enterprise hosts, because VS Code's built-in provider
-signs in to github.com only, and *Check Out Pull Request Branch*, because checking out a
-fork head needs a ref that does not exist on your own remote.
+GitHub Enterprise works through the editor's Enterprise provider. Point
+`github-enterprise.uri` at your server, sign in, and GitRay talks to that host's API rather
+than github.com. Until that setting names the host your remote is on, the sidebar says so —
+signing in to github.com would not help. One known limitation: the server has to be on the
+default HTTPS port, since GitRay compares hosts with the port stripped and so cannot address
+one on, say, `:8443`.
 
 GitRay degrades rather than disappearing. Without credentials, a GitHub remote, or full
 history it falls back to file-level indicators and states the reason in the sidebar instead
@@ -249,10 +248,12 @@ in this order:
 
 1. `gitray.remote`, if you set it. Set it to a remote that does not exist and the sidebar
    says so, rather than quietly falling back to something that answers.
-2. The remote pointing at whatever repository `gh` resolved. `gh` already does fork
-   base-repo resolution, including `gh repo set-default`, so when it is available its
-   answer decides.
-3. Otherwise the same name preference `gh` uses: `upstream`, then `github`, then `origin`.
+2. Otherwise the conventional name preference: `upstream`, then `github`, then `origin`.
+
+GitRay does not ask GitHub which repository your fork came from, deliberately: the answer
+is often a repository your clone has no remote for, and the pull request heads still have to
+be fetched from a remote that exists. `git remote add upstream …` is the fix, and
+`gitray.remote` covers everything unconventional.
 
 The chosen remote is named in the log (*GitRay: Show Log*) and in the sidebar whenever a
 fetch from it fails, which is what a wrong guess looks like. Both fixes take effect on the
@@ -289,6 +290,10 @@ To be explicit, because it is the reasonable worry:
   every other tool reports, which is your call to make and not an extension's side effect.
 - **Fork pull requests work**, since GitHub publishes fork heads under the base repo's
   `refs/pull/*`.
+- **One command is the exception, and only when you run it.** *Check Out Pull Request
+  Branch* does what it says: it creates a local branch, switches to it, and configures it to
+  push back to the repository the branch actually lives in. It warns first if your working
+  tree is dirty, and it fast-forwards rather than rewriting a branch you already have.
 
 Undo it completely with `GitRay: Remove Local GitRay Refs`, or by hand:
 
@@ -302,9 +307,7 @@ indicators only.
 ### API cost
 
 One metadata call per refresh, regardless of how many pull requests are open — the
-per-file data arrives in the same payload, and both transports ask GitHub's GraphQL API for
-the same fields, because that is what `gh pr list --json` does too. Measured at **1 GraphQL
-point** against a
+per-file data arrives in the same payload. Measured at **1 GraphQL point** against a
 5000/hour budget, so a full day at the default 60-second interval costs roughly 480 points.
 That is GitHub's GraphQL bucket, which is separate from the REST bucket your other tools
 use, so GitRay does not compete with them.

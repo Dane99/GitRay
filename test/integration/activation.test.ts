@@ -112,8 +112,8 @@ test('creates its view, status bar item, and content provider', () => {
 });
 
 test('reports the missing remote instead of failing silently', () => {
-  // Either gh cannot resolve a GitHub repository here, or it is unavailable entirely.
-  // Both are degraded states that must reach the user, and neither may throw.
+  // Either no remote here points at GitHub, or there is no session to ask with. Both are
+  // degraded states that must reach the user, and neither may throw.
   const messages = stub.statusBarItems[0]?.tooltipHistory ?? [];
   assert.ok(messages.length > 0, 'the status bar never rendered');
 });
