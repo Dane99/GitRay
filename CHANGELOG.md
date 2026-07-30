@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.14
+
+- **The README's account of degraded mode was wrong about two of its three cases.** It said
+  that without credentials, a GitHub remote, or full history GitRay falls back to file-level
+  indicators. Only the last is true: the file-level index arrives with the pull request list,
+  so a shallow clone, a failed fetch, or `gitray.fetchPullRequestRefs` turned off keeps it
+  and loses only the line-level work. Missing credentials or a GitHub remote takes the list
+  away too — what survives there is mainline drift, which is plain git. No behaviour changed;
+  the documentation now describes what the code does.
+
 ## 0.1.13
 
 - **The GitHub CLI is gone; the editor's own sign-in is the only transport.** GitRay used to

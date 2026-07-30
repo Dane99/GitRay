@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
