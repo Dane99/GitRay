@@ -46,7 +46,7 @@ function write(cwd: string, marker: string): void {
   writeFileSync(join(cwd, FILE), lines.join('\n') + '\n', 'utf8');
 }
 
-/** A selector with nothing configured and no gh — the detection path on its own. */
+/** A selector with nothing configured — the name-preference path on its own. */
 function detected(api: Git): RemoteSelector {
   return new RemoteSelector(api, () => '');
 }

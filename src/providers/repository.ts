@@ -1,14 +1,13 @@
 /**
  * Binds a workspace folder to the git repository and GitHub repository behind it.
  *
- * GitRay speaks in repo-relative POSIX paths everywhere — that is what `gh` reports and
+ * GitRay speaks in repo-relative POSIX paths everywhere — that is what GitHub reports and
  * what git diffs contain — so path conversion lives here and nowhere else.
  */
 
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readConfig } from '../core/config.js';
-import { Gh } from './gh.js';
 import { Git } from './git.js';
 import { GitHub } from './github.js';
 import { RemoteSelector } from './remoteSelection.js';
@@ -19,7 +18,7 @@ export class Repository {
   readonly github: GitHub;
   /**
    * Which remote the pull requests live on. One instance, shared with `github`, so that
-   * what gh resolves for metadata is the same place the refs are fetched from.
+   * the repository the metadata comes from is the same place the refs are fetched from.
    */
   readonly remotes: RemoteSelector;
 
@@ -33,7 +32,7 @@ export class Repository {
     this.remotes = new RemoteSelector(this.git, () => readConfig(folder.uri).remote);
     // The editor is injected here and nowhere deeper: everything below this line can be
     // exercised without one.
-    this.github = new GitHub(root, this.git, editorTokenSource(), new Gh(root), this.remotes);
+    this.github = new GitHub(this.git, editorTokenSource(), this.remotes);
   }
 
   /** Resolve the git repository containing a workspace folder, if there is one. */

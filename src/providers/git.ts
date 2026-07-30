@@ -185,6 +185,21 @@ export class Git {
   }
 
   /**
+   * Is one commit reachable from another?
+   *
+   * Exit code 1 is the answer "no", not a failure, so it is allowed through; anything else
+   * — an unknown rev, most likely — is a genuine error and is left to throw.
+   */
+  async isAncestor(maybeAncestor: string, descendant: string): Promise<boolean> {
+    const result = await run(
+      'git',
+      ['merge-base', '--is-ancestor', maybeAncestor, descendant],
+      { cwd: this.cwd, okExitCodes: [1] }
+    );
+    return result.code === 0;
+  }
+
+  /**
    * Common ancestor of HEAD and a pull request head.
    *
    * Undefined when the histories are unrelated, which happens with a rewritten branch or
@@ -415,6 +430,86 @@ export class Git {
       return false;
     }
   }
+
+  /**
+   * Check out a pull request's head as an ordinary local branch.
+   *
+   * The one operation in GitRay that touches the working tree, and the only one that writes
+   * outside `refs/gitray/*` — so it is deliberately the shape a person would type by hand,
+   * and it refuses rather than improvises when the branch it wants already exists.
+   *
+   * Where the head comes from depends on where it lives. A branch in the base repository
+   * has a real ref to track; a fork's branch has none, and GitHub publishes it under the
+   * base repository's `refs/pull/<n>/head` instead — which is also the only copy a
+   * contributor without access to the fork can reach.
+   *
+   * The branch config is what stops the checkout being a dead end. Without it `git pull`
+   * has nothing to pull from and `git push` guesses, which for a fork means pushing the
+   * contributor's work into the base repository under their branch name. So the branch is
+   * wired to whatever it can legitimately reach: the fork when the pull request allows
+   * maintainer edits, the read-only pull ref when it does not, the real branch otherwise.
+   */
+  async checkoutPullRequest(pr: PullRequestCheckout): Promise<void> {
+    const headRef = `refs/pull/${pr.prNumber}/head`;
+    const local = `refs/heads/${pr.branch}`;
+
+    if (await this.refOid(local)) {
+      // Never rewrite a branch somebody already has. A fast-forward is the whole of what is
+      // safe, and it is decided *before* switching: `merge --ff-only` would refuse just as
+      // correctly, but only after the checkout had already moved the user off whatever they
+      // were working on, leaving them on a stranger's branch to read the error from.
+      await this.git(['fetch', '--no-tags', '--quiet', pr.remote, headRef]);
+      const fetched = await this.refOid('FETCH_HEAD');
+      if (!fetched) {
+        throw new Error(`the head of pull request #${pr.prNumber} did not arrive.`);
+      }
+
+      // Either direction is fine. Behind is the fast-forward itself; ahead is a maintainer
+      // who has already committed on top of the contributor's branch, and their commit has
+      // to survive this.
+      const behind = await this.isAncestor(local, fetched);
+      const ahead = behind ? false : await this.isAncestor(fetched, local);
+      if (!behind && !ahead) {
+        throw new Error(
+          `the local branch \`${pr.branch}\` has commits that pull request #${pr.prNumber} does not. ` +
+            'Rename or delete it and try again — GitRay will not move a branch that would lose work.'
+        );
+      }
+
+      await this.git(['checkout', pr.branch]);
+      if (behind) await this.git(['merge', '--ff-only', 'FETCH_HEAD']);
+    } else {
+      await this.git(['fetch', '--no-tags', '--quiet', pr.remote, `${headRef}:${local}`]);
+      await this.git(['checkout', pr.branch]);
+    }
+
+    const [trackedRemote, trackedRef] = pr.pushUrl
+      ? [pr.pushUrl, `refs/heads/${pr.headRefName}`]
+      : pr.isCrossRepository
+        ? [pr.remote, headRef]
+        : [pr.remote, `refs/heads/${pr.headRefName}`];
+
+    await this.git(['config', `branch.${pr.branch}.remote`, trackedRemote]);
+    await this.git(['config', `branch.${pr.branch}.merge`, trackedRef]);
+    if (pr.pushUrl) {
+      await this.git(['config', `branch.${pr.branch}.pushRemote`, pr.pushUrl]);
+    }
+  }
+}
+
+/** Everything `checkoutPullRequest` needs to know that git cannot work out for itself. */
+export interface PullRequestCheckout {
+  prNumber: number;
+  /** The local branch to land on. */
+  branch: string;
+  /** The remote the pull request's *base* repository is configured as. */
+  remote: string;
+  /** What the branch is called on the repository the head lives in. */
+  headRefName: string;
+  /** Whether that repository is a fork rather than the base repository. */
+  isCrossRepository: boolean;
+  /** The fork's clone URL, when the pull request allows pushing back to it. */
+  pushUrl?: string;
 }
 
 /** ASCII unit separator: cannot occur in a sha, a name, or a commit subject. */

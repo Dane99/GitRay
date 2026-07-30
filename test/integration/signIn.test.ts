@@ -1,7 +1,7 @@
 /**
- * What a poll is allowed to ask the user.
+ * What a poll is allowed to ask the user, and which account it asks about.
  *
- * The editor-session fallback rests on one promise: GitRay may borrow a session that
+ * GitRay borrowing the editor's session rests on one promise: it may use a session that
  * already exists, but nothing on a timer may ever open a sign-in dialog. A background
  * extension that pops an authentication prompt every sixty seconds is worse than one that
  * quietly does nothing, and the failure mode is invisible in development — a developer who
@@ -11,6 +11,11 @@
  * `vscode.authentication`, and asserts on every request that reached it. The interactive
  * path is exercised too, through the command's own entry point, because "polling is silent"
  * is only worth asserting alongside "the explicit sign-in still works".
+ *
+ * The last group is about *whose* sign-in. The editor holds a separate session per host, so
+ * a workspace with a github.com repository beside an Enterprise one has two sign-in rows
+ * wanting two different accounts — and the row that was clicked is the only thing that says
+ * which.
  */
 
 import { test, before, after, beforeEach } from 'node:test';
@@ -30,6 +35,7 @@ let SyncEngine: typeof import('../../src/sync/engine.js').SyncEngine;
 let GitHub: typeof import('../../src/providers/github.js').GitHub;
 let RemoteSelector: typeof import('../../src/providers/remoteSelection.js').RemoteSelector;
 let editorTokenSource: typeof import('../../src/providers/session.js').editorTokenSource;
+let providerFor: typeof import('../../src/providers/session.js').providerFor;
 let signIn: typeof import('../../src/providers/session.js').signIn;
 let readConfig: typeof import('../../src/core/config.js').readConfig;
 
@@ -46,7 +52,7 @@ before(async () => {
   ({ SyncEngine } = await import('../../src/sync/engine.js'));
   ({ GitHub } = await import('../../src/providers/github.js'));
   ({ RemoteSelector } = await import('../../src/providers/remoteSelection.js'));
-  ({ editorTokenSource, signIn } = await import('../../src/providers/session.js'));
+  ({ editorTokenSource, providerFor, signIn } = await import('../../src/providers/session.js'));
   ({ readConfig } = await import('../../src/core/config.js'));
 });
 
@@ -57,10 +63,11 @@ after(() => {
 beforeEach(() => {
   stub.sessionRequests.length = 0;
   stub.githubSession = undefined;
+  delete stub.settings['github-enterprise.uri'];
   probed = [];
 });
 
-/** Which repository each probe asked about, so a settled transport can be shown to re-probe. */
+/** Which repository each probe asked about, so a settled probe can be shown to re-run. */
 let probed: string[] = [];
 
 /** A GitHub that answers a probe and a list, and records which repository was asked. */
@@ -105,12 +112,6 @@ function stubEndpoint(): void {
   }) as typeof fetch;
 }
 
-/** A machine with no gh at all — the case the fallback exists for. */
-const noCli = {
-  probe: async () => ({ kind: 'missing' }),
-  isInstalled: async () => false
-} as never;
-
 /**
  * Just enough repository for a sync pass.
  *
@@ -133,7 +134,7 @@ function harness(
     deleteRefs: async () => {}
   };
   const remotes = new RemoteSelector(git as never, options.configured ?? (() => ''));
-  const github = new GitHub(ROOT, git as never, editorTokenSource(), noCli, remotes);
+  const github = new GitHub(git as never, editorTokenSource(), remotes);
 
   const repository = {
     root: ROOT,
@@ -206,6 +207,56 @@ test('signing in explicitly is the one path that may open a dialog', async () =>
   );
 });
 
+test('github.com needs no configuration, and every other host needs the setting', async () => {
+  // The editor registers its Enterprise provider only once `github-enterprise.uri` names a
+  // server. Asking for a session from a provider that was never registered *throws*, so a
+  // host with no provider has to be recognised before anything asks.
+  assert.equal(providerFor('github.com'), 'github');
+  assert.equal(providerFor('github.acme-corp.example'), undefined);
+
+  stub.settings['github-enterprise.uri'] = 'https://github.acme-corp.example/';
+
+  assert.equal(providerFor('github.acme-corp.example'), 'github-enterprise');
+  assert.equal(providerFor('github.com'), 'github', 'github.com is never the Enterprise one');
+  assert.equal(
+    providerFor('github.other-corp.example'),
+    undefined,
+    'one server is configured, not every server'
+  );
+});
+
+test('an Enterprise session is requested from the Enterprise provider', async () => {
+  stub.settings['github-enterprise.uri'] = 'https://github.acme-corp.example';
+  stub.githubSession = { accessToken: 'enterprise-token', account: { label: 'dane' } };
+
+  const token = await editorTokenSource().getToken({
+    host: 'github.acme-corp.example',
+    interactive: false
+  });
+
+  assert.equal(token, 'enterprise-token');
+  assert.deepEqual(
+    stub.sessionRequests.map((request) => request.providerId),
+    ['github-enterprise']
+  );
+});
+
+test('a host with no provider is not asked about at all', async () => {
+  // Not merely "returns no token": reaching the editor for an unregistered provider is the
+  // throw this guard exists to avoid, and a request recorded here would prove it happened.
+  stub.githubSession = { accessToken: 'token-value', account: { label: 'dane' } };
+
+  const token = await editorTokenSource().getToken({
+    host: 'github.acme-corp.example',
+    interactive: false
+  });
+
+  assert.equal(token, undefined);
+  assert.deepEqual(stub.sessionRequests, [], 'the editor must not be asked');
+  assert.equal(await signIn('github.acme-corp.example'), false);
+  assert.deepEqual(stub.sessionRequests, [], 'and the explicit command must not ask either');
+});
+
 test('a dismissed sign-in is an answer, not a failure', async () => {
   // The editor *rejects* when the user closes the dialog. Nothing may throw out of that:
   // the sidebar row stays and the next poll carries on silently.
@@ -257,4 +308,108 @@ test('a poll after signing in picks the session up without a reload', async () =
     [42],
     'the engine must re-probe while degraded rather than latching the failure'
   );
+});
+
+/**
+ * Two repositories on two hosts, and the sidebar rows that offer to sign in to each.
+ *
+ * Deliberately not the sync engine: what is under test is the routing between a clicked row
+ * and a host, so the sessions are the thinnest possible stand-ins for one.
+ */
+function twoHostWorkspace() {
+  const hosts: Record<string, string> = {
+    '/dotcom': 'github.com',
+    '/enterprise': 'github.acme-corp.example'
+  };
+
+  const sessions = Object.keys(hosts).map((root) => ({
+    id: root,
+    label: root,
+    repository: { root, github: { host: async () => hosts[root] } },
+    store: {
+      currentStatus: () => ({ state: 'degraded', reason: 'signed-out', message: 'Sign in' }),
+      hasMainlineDrift: () => false,
+      allPullRequests: () => [],
+      mutedPullRequestNumbers: () => [],
+      mutedPullRequest: () => undefined
+    },
+    scanner: {
+      hotFiles: () => [],
+      collisionCount: () => 0,
+      scan: async () => {},
+      onDidChange: () => ({ dispose() {} })
+    },
+    scheduler: { request: async () => {} },
+    controller: { refreshVisible: () => {} },
+    config: () => readConfig(),
+    onDidChange: () => ({ dispose() {} })
+  }));
+
+  return {
+    sessions,
+    workspace: {
+      ready: true,
+      size: sessions.length,
+      all: () => sessions,
+      only: () => undefined,
+      // The active editor is deliberately in the *other* repository throughout, because
+      // that is exactly the state in which guessing from it gets the wrong answer.
+      active: () => sessions[0],
+      sessionFor: () => sessions[0],
+      sessionAt: (root: string | undefined) => sessions.find((s) => s.id === root),
+      collisionCount: () => 0,
+      onDidChange: () => ({ dispose() {} })
+    } as never
+  };
+}
+
+test('the sign-in row carries the repository it belongs to', async () => {
+  const { PulseTreeProvider } = await import('../../src/ui/tree.js');
+  const { sessions, workspace } = twoHostWorkspace();
+  const tree = new PulseTreeProvider(workspace);
+
+  const item = tree.getTreeItem({ kind: 'status', session: sessions[1] } as never);
+
+  assert.equal(item.command?.command, 'gitray.signIn');
+  assert.deepEqual(
+    item.command?.arguments,
+    [{ root: '/enterprise' }],
+    'without this the command has nothing to distinguish one row from the other'
+  );
+});
+
+test('clicking a row signs in to that repository’s host, not the focused file’s', async () => {
+  // The bug this exists for: the Enterprise row is clicked while a github.com file is open,
+  // and the editor opens a github.com dialog that cannot help. It is a silent kind of wrong
+  // — a sign-in that succeeds and changes nothing.
+  stub.settings['github-enterprise.uri'] = 'https://github.acme-corp.example';
+  stub.githubSession = { accessToken: 'token-value', account: { label: 'dane' } };
+
+  const { registerCommands } = await import('../../src/ui/commands.js');
+  const { workspace } = twoHostWorkspace();
+  const disposables = registerCommands({
+    extensionUri: (stub.api.Uri as { file(p: string): never }).file('/dotcom'),
+    workspace
+  });
+
+  try {
+    const handler = stub.registeredCommands.get('gitray.signIn');
+    assert.ok(handler, 'gitray.signIn was never registered');
+
+    await handler({ root: '/enterprise' });
+    assert.deepEqual(
+      stub.sessionRequests.map((request) => request.providerId),
+      ['github-enterprise'],
+      'the active editor is in /dotcom, and it must not decide this'
+    );
+
+    stub.sessionRequests.length = 0;
+    await handler({ root: '/dotcom' });
+    assert.deepEqual(
+      stub.sessionRequests.map((request) => request.providerId),
+      ['github']
+    );
+  } finally {
+    disposables.forEach((disposable) => disposable.dispose());
+  }
 });

@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.13
+
+- **The GitHub CLI is gone; the editor's own sign-in is the only transport.** GitRay used to
+  prefer `gh` whenever it was installed and logged in, and fall back to the editor's session
+  otherwise. Two transports answering the same question meant two sets of failure modes, two
+  ways to resolve a repository, and behaviour that differed between machines for reasons a
+  user could not see — a colleague's `gh repo set-default` was enough to change which
+  repository their sidebar described. There is now one path, and it needs nothing installed.
+  - **GitHub Enterprise works through the editor instead of through `gh`.** Set
+    `github-enterprise.uri` to your server and sign in; GitRay reads the host from your
+    remote and talks to that server's `/api/graphql` rather than github.com. When the
+    setting does not name the host your remote is on, the sidebar says so and names the
+    setting — the previous advice was to install a CLI.
+  - **Checking out a pull request is GitRay's own now**, and no longer needs `gh` installed.
+    A fork's head comes from `refs/pull/<n>/head` on the base remote, which is the only copy
+    that exists there, and the new branch is wired to push back to the fork when the pull
+    request allows maintainer edits — and to the read-only pull ref when it does not, rather
+    than to a remote that would refuse the push. An existing branch of the same name is
+    fast-forwarded, never reset: a branch carrying commits the pull request does not have is
+    refused *before* the checkout switches, so you are left where you were reading the error
+    rather than parked on somebody else's branch.
+  - **The sidebar's sign-in row knows which repository it belongs to.** It used to sign in to
+    whichever host the active editor's repository was on, which is the wrong account in the
+    one workspace where it matters: a github.com repository open beside an Enterprise one
+    shows two sign-in rows, and clicking either while reading a file from the other opened a
+    dialog that could not help.
+  - **Remote selection lost its best input and does not pretend otherwise.** `gh` did fork
+    base-repo resolution, and nothing here can replace it: asking GitHub which repository a
+    fork came from returns a repository your clone may well have no remote for, and the
+    refs still have to be fetched from a remote that exists. Selection is now
+    `gitray.remote`, then `upstream`, `github`, `origin`. If your pull requests live
+    somewhere the convention does not find, the setting is the answer and the sidebar names
+    it when a fetch fails.
+  - Opening a pull request GitRay has not seen — a number typed into the palette, or one
+    that closed while the sidebar was open — derives the URL from the remote instead of
+    asking `gh` for a redirect. The file anchor survives that path now, where before it was
+    dropped; when nothing knows which repository the number belongs to, that is said rather
+    than silently doing nothing.
+
 ## 0.1.12
 
 - **Unmuting a pull request brings its indicators back.** Muting deletes the local

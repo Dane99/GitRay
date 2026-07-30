@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRemoteUrl, isGitHubDotCom } from '../../src/providers/remote.js';
+import { parseRemoteUrl } from '../../src/providers/remote.js';
 
 test('parses the forms git actually hands out', () => {
   const expected = { host: 'github.com', owner: 'Dane99', name: 'GitRay' };
@@ -51,7 +51,6 @@ test('keeps Enterprise hosts distinct from github.com', () => {
   assert.ok(remote);
   assert.equal(remote.host, 'github.acme-corp.example');
   assert.equal(remote.nameWithOwner, 'platform/api');
-  assert.equal(isGitHubDotCom(remote), false, 'an Enterprise host must not be treated as github.com');
 });
 
 test('takes the last two path segments, so a hosted path prefix still resolves', () => {
