@@ -235,9 +235,14 @@ signing in to github.com would not help. One known limitation: the server has to
 default HTTPS port, since GitRay compares hosts with the port stripped and so cannot address
 one on, say, `:8443`.
 
-GitRay degrades rather than disappearing. Without credentials, a GitHub remote, or full
-history it falls back to file-level indicators and states the reason in the sidebar instead
-of throwing a notification at you every minute.
+GitRay degrades rather than disappearing, and what survives depends on what is missing.
+A shallow clone, a failed fetch, or `gitray.fetchPullRequestRefs` turned off costs you the
+line-level indicators only: the file-level ones come from the pull request list rather than
+from any local diff, so they are unaffected. Missing credentials or a GitHub remote takes
+that list away too, and what keeps working is mainline drift, which is plain git — though
+badges from the last successful refresh stay on screen, which is what an expired login or a
+dropped connection looks like. Either way the reason is stated in the sidebar instead of
+thrown at you as a notification every minute.
 
 ### Which remote GitRay uses
 
