@@ -55,8 +55,88 @@ export function splitLines(text: string): string[] {
   return text.split(/\r?\n/);
 }
 
+/**
+ * Limits on how much work one alignment may do.
+ *
+ * Myers' algorithm costs roughly (N + M) × D, where D is the number of differing lines, so
+ * a large file that has drifted far from its base is quadratic: 10,000 lines with a third
+ * of them changed takes seconds, all of it on the extension host's only thread. Past these
+ * limits the alignment is abandoned and the file falls back to a file-level indicator,
+ * which is the honest answer for a file that has been rewritten anyway.
+ */
+export interface AlignmentLimits {
+  /** Differing lines beyond which the diff gives up. */
+  maxEditLength: number;
+  /** Milliseconds beyond which the diff gives up. */
+  timeoutMs: number;
+}
+
+export const DEFAULT_ALIGNMENT_LIMITS: AlignmentLimits = { maxEditLength: 4000, timeoutMs: 250 };
+
+type Part = { count?: number; value: string[]; added?: boolean; removed?: boolean };
+
+/**
+ * Diff two line arrays, or give up when it would cost more than `limits` allow.
+ *
+ * The common prefix and suffix are stripped first. Myers walks them for free in principle,
+ * but in practice a typical edit touches a few lines in the middle of a long file, and
+ * trimming means the expensive part only ever sees those lines.
+ */
+function diffLines(
+  baseLines: string[],
+  bufferLines: string[],
+  limits: AlignmentLimits | undefined
+): Part[] | undefined {
+  const shorter = Math.min(baseLines.length, bufferLines.length);
+  let prefix = 0;
+  while (prefix < shorter && baseLines[prefix] === bufferLines[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < shorter - prefix &&
+    baseLines[baseLines.length - 1 - suffix] === bufferLines[bufferLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const baseMiddle = baseLines.slice(prefix, baseLines.length - suffix);
+  const bufferMiddle = bufferLines.slice(prefix, bufferLines.length - suffix);
+
+  let middle: Part[];
+  if (baseMiddle.length === 0 && bufferMiddle.length === 0) {
+    middle = [];
+  } else if (baseMiddle.length === 0) {
+    middle = [{ count: bufferMiddle.length, value: bufferMiddle, added: true }];
+  } else if (bufferMiddle.length === 0) {
+    middle = [{ count: baseMiddle.length, value: baseMiddle, removed: true }];
+  } else {
+    const options = limits
+      ? { maxEditLength: limits.maxEditLength, timeout: limits.timeoutMs }
+      : undefined;
+    const result = diffArrays(baseMiddle, bufferMiddle, options as never) as Part[] | undefined;
+    if (!result) return undefined;
+    middle = result;
+  }
+
+  const parts: Part[] = [];
+  if (prefix > 0) parts.push({ count: prefix, value: [] });
+  parts.push(...middle);
+  if (suffix > 0) parts.push({ count: suffix, value: [] });
+  return parts;
+}
+
+/** Align without limits. Always produces an answer, however long it takes. */
 export function alignLines(baseLines: string[], bufferLines: string[]): Alignment {
-  const parts = diffArrays(baseLines, bufferLines);
+  return alignLinesWithin(baseLines, bufferLines, undefined) as Alignment;
+}
+
+/** Align, or return undefined when the two sides are too far apart to be worth it. */
+export function alignLinesWithin(
+  baseLines: string[],
+  bufferLines: string[],
+  limits: AlignmentLimits | undefined = DEFAULT_ALIGNMENT_LIMITS
+): Alignment | undefined {
+  const parts = diffLines(baseLines, bufferLines, limits);
+  if (!parts) return undefined;
 
   const equals: EqualSegment[] = [];
   const changes: ChangedSegment[] = [];

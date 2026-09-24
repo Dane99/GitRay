@@ -20,15 +20,53 @@ export class GitRayFileDecorationProvider
   private readonly onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri[] | undefined>();
   readonly onDidChangeFileDecorations = this.onDidChangeEmitter.event;
   private disposables: vscode.Disposable[] = [];
+  /** What each badged file showed last time, by URI, so only real changes are announced. */
+  private shown = new Map<string, { uri: vscode.Uri; signature: string }>();
 
   constructor(private readonly workspace: Workspace) {
     this.disposables.push(
       this.onDidChangeEmitter,
       vscode.window.registerFileDecorationProvider(this),
-      // Refreshing everything is the honest signal: a sync can add or remove badges
-      // anywhere, and VS Code only re-queries the rows it is actually showing.
-      this.workspace.onDidChange(() => this.onDidChangeEmitter.fire(undefined))
+      this.workspace.onDidChange(() => this.announceChanges())
     );
+  }
+
+  /**
+   * Tell the explorer about the files whose badge changed, and only those.
+   *
+   * Announcing "everything" made the explorer re-ask about every row it was showing on
+   * every change, including the many changes that move no badge at all. The set of files
+   * that can carry a badge is small and known — the ones an open pull request touches, and
+   * the ones the scan found drift in — so working out the difference is cheap.
+   */
+  private announceChanges(): void {
+    const next = new Map<string, { uri: vscode.Uri; signature: string }>();
+    for (const session of this.workspace.all()) {
+      const paths = new Set(session.store.allTouchedPaths());
+      for (const analysis of session.scanner.hotFiles()) paths.add(analysis.path);
+
+      for (const path of paths) {
+        const uri = session.repository.uriFor(path);
+        const decoration = this.provideFileDecoration(uri);
+        if (!decoration) continue;
+        const color = (decoration.color as { id?: string } | undefined)?.id ?? '';
+        next.set(uri.toString(), {
+          uri,
+          signature: `${decoration.badge}\0${color}\0${decoration.tooltip}`
+        });
+      }
+    }
+
+    const changed: vscode.Uri[] = [];
+    for (const [key, entry] of next) {
+      if (this.shown.get(key)?.signature !== entry.signature) changed.push(entry.uri);
+    }
+    for (const [key, entry] of this.shown) {
+      if (!next.has(key)) changed.push(entry.uri);
+    }
+
+    this.shown = next;
+    if (changed.length > 0) this.onDidChangeEmitter.fire(changed);
   }
 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {

@@ -15,7 +15,8 @@
  */
 
 import * as vscode from 'vscode';
-import type { FileAnalysis, MainlineState, PullRequest } from '../core/types.js';
+import type { FileAnalysis, MainlineState, PullRequest, ResolvedRegion } from '../core/types.js';
+import { MAX_SCANNED_FILES, originKey } from '../core/types.js';
 import type { Config } from '../core/config.js';
 import { log } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
@@ -23,13 +24,23 @@ import type { Analyzer } from '../model/analyzer.js';
 import type { Store } from '../model/store.js';
 import type { Repository } from '../providers/repository.js';
 
-/** Ceiling on files analyzed per scan, so a branch that rewrites the world stays responsive. */
-const MAX_FILES = 200;
+const MAX_FILES = MAX_SCANNED_FILES;
 
 export class CollisionScanner implements vscode.Disposable {
   private results = new Map<string, FileAnalysis>();
+  private hot: readonly FileAnalysis[] | undefined;
+  /** Whether anything has been published yet; the first result is always announced. */
+  private published = false;
   private scanning = false;
   private rescanQueued = false;
+  /**
+   * `git diff --name-only <base>` per base, until the working tree may have changed.
+   *
+   * That diff stats every file in the working tree, and a scan asked it once per distinct
+   * merge base plus once for the mainline — on every scan, although only a save, a HEAD
+   * move, or something outside the editor can change the answer.
+   */
+  private changed = new Map<string, Promise<string[]>>();
 
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.onDidChangeEmitter.event;
@@ -41,10 +52,13 @@ export class CollisionScanner implements vscode.Disposable {
   ) {}
 
   /** Every analyzed file that has at least one non-ambient region. */
-  hotFiles(): FileAnalysis[] {
-    return [...this.results.values()]
+  hotFiles(): readonly FileAnalysis[] {
+    // Computed once per published scan: the tree, the badges, and the radar each ask
+    // several times per refresh.
+    this.hot ??= [...this.results.values()]
       .filter((analysis) => analysis.regions.some((region) => region.severity !== 'ambient'))
       .sort((a, b) => collisionCount(b) - collisionCount(a) || a.path.localeCompare(b.path));
+    return this.hot;
   }
 
   analysisFor(path: string): FileAnalysis | undefined {
@@ -57,6 +71,14 @@ export class CollisionScanner implements vscode.Disposable {
       total += collisionCount(analysis);
     }
     return total;
+  }
+
+  /**
+   * Forget which files the working tree has changed. Call on save, when HEAD moves, and
+   * once per sync pass to catch edits made outside the editor.
+   */
+  workingTreeChanged(): void {
+    this.changed.clear();
   }
 
   async scan(config: Config): Promise<void> {
@@ -97,9 +119,15 @@ export class CollisionScanner implements vscode.Disposable {
       log.debug(`collision scan: ${candidates.size} candidates exceeds cap, truncating`);
     }
 
+    // Built once rather than searched per file: `textDocuments` is a fresh array on every
+    // read, and comparing URIs as strings for each of two hundred files adds up.
+    const open = new Map(
+      vscode.workspace.textDocuments.map((document) => [document.uri.toString(), document])
+    );
+
     const results = new Map<string, FileAnalysis>();
     for (const path of [...candidates].slice(0, MAX_FILES)) {
-      const current = await this.readCurrentText(path);
+      const current = await this.readCurrentText(path, open);
       if (current === undefined) continue;
 
       const analysis = await this.analyzer.analyze(path, current.text, current.version, pullRequests, {
@@ -135,7 +163,7 @@ export class CollisionScanner implements vscode.Disposable {
       // One `git diff --name-only` per distinct merge base — normally just one, since
       // every pull request branches off the same base commit.
       for (const baseSha of await this.distinctMergeBases(pullRequests)) {
-        for (const path of await this.repository.git.changedSince(baseSha)) {
+        for (const path of await this.changedSince(baseSha)) {
           if (keep(path, touched)) candidates.add(path);
         }
       }
@@ -145,12 +173,21 @@ export class CollisionScanner implements vscode.Disposable {
       const landed = new Set(
         await this.repository.git.changedPaths(mainline.base, mainline.tip)
       );
-      for (const path of await this.repository.git.changedSince(mainline.base)) {
+      for (const path of await this.changedSince(mainline.base)) {
         if (keep(path, landed)) candidates.add(path);
       }
     }
 
     return candidates;
+  }
+
+  private changedSince(baseSha: string): Promise<string[]> {
+    let pending = this.changed.get(baseSha);
+    if (!pending) {
+      pending = this.repository.git.changedSince(baseSha);
+      this.changed.set(baseSha, pending);
+    }
+    return pending;
   }
 
   /** One merge base per pull request, answered from the analyzer's cache. */
@@ -176,13 +213,12 @@ export class CollisionScanner implements vscode.Disposable {
    * state of the buffer.
    */
   private async readCurrentText(
-    path: string
+    path: string,
+    openDocuments: ReadonlyMap<string, vscode.TextDocument>
   ): Promise<{ text: string; version: number } | undefined> {
     const uri = this.repository.uriFor(path);
 
-    const open = vscode.workspace.textDocuments.find(
-      (document) => document.uri.toString() === uri.toString()
-    );
+    const open = openDocuments.get(uri.toString());
     if (open) return { text: open.getText(), version: open.version };
 
     try {
@@ -207,13 +243,61 @@ export class CollisionScanner implements vscode.Disposable {
    * reads it from here.
    */
   private publish(results: Map<string, FileAnalysis>): void {
+    // A scan that found exactly what the last one did has nothing to announce. Every
+    // surface repaints on this event, and most scans are triggered by something that did
+    // not move a single collision.
+    const unchanged = this.published && sameResults(this.results, results);
     this.results = results;
-    this.onDidChangeEmitter.fire();
+    this.hot = undefined;
+    this.published = true;
+    if (!unchanged) this.onDidChangeEmitter.fire();
   }
 
   dispose(): void {
     this.onDidChangeEmitter.dispose();
   }
+}
+
+/**
+ * Would every surface render these two scans identically?
+ *
+ * Compares what the surfaces read — which files, which regions, where, and how severe — so
+ * a rescan that merely rebuilt equal objects does not count as news.
+ */
+function sameResults(
+  a: ReadonlyMap<string, FileAnalysis>,
+  b: ReadonlyMap<string, FileAnalysis>
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [path, mine] of a) {
+    const theirs = b.get(path);
+    if (!theirs || mine.degraded !== theirs.degraded) return false;
+    if (mine.regions.length !== theirs.regions.length) return false;
+    for (let i = 0; i < mine.regions.length; i++) {
+      if (!sameRegion(mine.regions[i], theirs.regions[i])) return false;
+    }
+  }
+  return true;
+}
+
+function sameRegion(a: ResolvedRegion, b: ResolvedRegion): boolean {
+  return (
+    a.severity === b.severity &&
+    a.distance === b.distance &&
+    a.author === b.author &&
+    a.baseSha === b.baseSha &&
+    a.range.start === b.range.start &&
+    a.range.end === b.range.end &&
+    a.baseRange.start === b.baseRange.start &&
+    a.baseRange.end === b.baseRange.end &&
+    originKey(a.origin) === originKey(b.origin) &&
+    // Mainline origins carry their commits; a new commit touching the same lines is news.
+    (a.origin.kind !== 'mainline' ||
+      b.origin.kind !== 'mainline' ||
+      a.origin.commits.length === b.origin.commits.length) &&
+    a.added.length === b.added.length &&
+    a.removed.length === b.removed.length
+  );
 }
 
 function collisionCount(analysis: FileAnalysis): number {

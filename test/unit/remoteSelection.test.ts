@@ -116,3 +116,30 @@ test('an Enterprise remote keeps its own host rather than collapsing to github.c
 test('a remote that is not a GitHub URL resolves to no repository', async () => {
   assert.equal(await selector({ origin: '/srv/mirrors/app.git' }).repository(), undefined);
 });
+
+test('within a pinned pass the remote list is read once', async () => {
+  let reads = 0;
+  const remotes: Record<string, string> = { origin: FORK.origin };
+  const selected = new RemoteSelector(
+    {
+      remotes: async () => {
+        reads++;
+        return Object.keys(remotes);
+      },
+      remoteUrl: async (name: string) => remotes[name]
+    } as never,
+    () => ''
+  );
+
+  await selected.pinned(async () => {
+    await selected.name();
+    await selected.choose();
+    await selected.repository();
+  });
+  assert.equal(reads, 1, 'one sync pass, one `git remote`');
+
+  // And the next pass still sees a remote added in between.
+  remotes.upstream = FORK.upstream;
+  assert.equal(await selected.pinned(() => selected.name()), 'upstream');
+  assert.equal(reads, 2);
+});

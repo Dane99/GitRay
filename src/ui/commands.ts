@@ -583,7 +583,10 @@ export function registerCommands(context: CommandContext): vscode.Disposable[] {
       if (choice !== 'Remove') return;
 
       let removed = 0;
-      for (const session of sessions) removed += await session.repository.git.deleteAllRefs();
+      for (const session of sessions) {
+        removed += await session.repository.git.deleteAllRefs();
+        session.analyzer.refsChanged();
+      }
       void vscode.window.showInformationMessage(
         `GitRay: removed ${removed} ${removed === 1 ? 'ref' : 'refs'}.`
       );

@@ -12,7 +12,7 @@ import { log, timed } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
 import type { Repository } from '../providers/repository.js';
 import { toState, type GitHubFailure } from '../providers/github.js';
-import { prRef } from '../providers/git.js';
+import { prRef, REF_NAMESPACE } from '../providers/git.js';
 import { describeUnusableRemote } from '../providers/remoteSelection.js';
 import type { Store } from '../model/store.js';
 import type { Analyzer } from '../model/analyzer.js';
@@ -44,6 +44,8 @@ export class SyncEngine {
   private mainlineFetchedAt = NEVER;
   /** Set by the developer fixture command; bypasses GitHub entirely. */
   private fixture: PullRequest[] | undefined;
+  /** Whether this is a shallow clone, read at most once per pass. */
+  private shallow: Promise<boolean> | undefined;
 
   constructor(
     private readonly repository: Repository,
@@ -67,6 +69,14 @@ export class SyncEngine {
    * cadence.
    */
   async sync(config: Config): Promise<boolean> {
+    // Facts that cannot change within a pass are read once per pass. Every step below used
+    // to ask again, and each asking was a git process: the remote list five times, the
+    // shallow flag twice.
+    this.shallow = undefined;
+    return this.repository.remotes.pinned(() => this.runPass(config));
+  }
+
+  private async runPass(config: Config): Promise<boolean> {
     try {
       await this.detectHeadMove();
 
@@ -215,6 +225,7 @@ export class SyncEngine {
   ): Promise<void> {
     if (closed.length > 0) {
       await this.repository.git.deleteRefs(closed);
+      this.analyzer.refsChanged();
       log.debug(`pruned refs for closed pull requests: ${closed.join(', ')}`);
     }
 
@@ -232,7 +243,7 @@ export class SyncEngine {
       return;
     }
 
-    if (await this.repository.git.isShallow()) {
+    if (await this.isShallow()) {
       // Without full history there may be no reachable merge base, and a wrong merge base
       // silently produces indicators on the wrong lines. File-level is the safe answer.
       this.store.setDegraded(
@@ -243,12 +254,12 @@ export class SyncEngine {
     }
 
     // Fetch when our ref is missing or points somewhere other than the current head, so
-    // a force push or a manual ref cleanup both heal on the next pass.
-    const missing: number[] = [];
-    for (const pr of pullRequests) {
-      const current = await this.repository.git.refOid(prRef(pr.number));
-      if (current !== pr.headRefOid) missing.push(pr.number);
-    }
+    // a force push or a manual ref cleanup both heal on the next pass. One read covers
+    // every pull request; asking ref by ref was a process spawn each, on every poll.
+    const local = await this.repository.git.refOids(REF_NAMESPACE);
+    const missing = pullRequests
+      .filter((pr) => local.get(prRef(pr.number)) !== pr.headRefOid)
+      .map((pr) => pr.number);
 
     if (missing.length > 0) {
       log.info(
@@ -263,7 +274,11 @@ export class SyncEngine {
         // this fetch is awaited after it — so the pass they ran had nothing to analyze
         // against. Nothing else announces it: the status below is already `ready`, so it
         // fires nothing, and the file would stay blank until the next poll or keystroke.
-        this.store.invalidateAll();
+        //
+        // Only the fetched pull requests are invalidated. Everyone else's objects did not
+        // change, and throwing their regions away made every push cost a full rescan.
+        this.analyzer.refsChanged();
+        this.store.invalidatePullRequests(missing);
       } catch (error) {
         log.warn(`fetch failed: ${error instanceof Error ? error.message : String(error)}`);
         // The remote is named because it is the thing most likely to be wrong: a fork whose
@@ -306,7 +321,7 @@ export class SyncEngine {
 
     // Without full history there may be no reachable merge base, and a wrong base puts
     // indicators on the wrong lines. Saying nothing beats saying something wrong.
-    if (await this.repository.git.isShallow()) {
+    if (await this.isShallow()) {
       this.store.setMainline(undefined);
       return;
     }
@@ -357,6 +372,11 @@ export class SyncEngine {
 
     const commits = base === tip ? [] : await git.commitsIn(base, tip);
     return { branch, tip, base, commits };
+  }
+
+  private isShallow(): Promise<boolean> {
+    this.shallow ??= this.repository.git.isShallow();
+    return this.shallow;
   }
 
   /**

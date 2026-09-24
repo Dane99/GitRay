@@ -190,6 +190,9 @@ test('a head that comes back is analyzed again, not written off for the session'
   assert.equal(during.regions.length, 0, 'nothing to show while the ref is gone');
 
   restoreRef();
+  // What the engine does once a fetch lands. The analyzer reads GitRay's refs once and
+  // trusts that answer until told they changed, so the test has to tell it too.
+  h.analyzer.refsChanged();
   const after = await analyze(h);
 
   assert.ok(
@@ -227,6 +230,7 @@ test('an empty diff against a missing head is not mistaken for "they changed not
   // and then deletes the ref — leaving the merge base cached and correct.
   h.store.setPullRequests([]);
   dropRef();
+  h.analyzer.refsChanged();
 
   // Unmute. The list comes back before the fetch does, so this pass meets the missing ref.
   h.store.setPullRequests([pr]);
@@ -234,6 +238,7 @@ test('an empty diff against a missing head is not mistaken for "they changed not
   assert.equal(during.regions.length, 0, 'nothing to show while the head is absent');
 
   restoreRef();
+  h.analyzer.refsChanged();
   const after = await h.analyzer.analyze(FILE, text(), 1, [pr], options);
   assert.ok(
     after.regions.length > 0,
@@ -312,5 +317,38 @@ test('a genuinely unrelated history is only asked about once', async () => {
   const second = await h.analyzer.analyze(FILE, text, 1, [pr], options);
   assert.equal(second.degraded, true, 'and one that is worth remembering');
 
+  h.dispose();
+});
+
+/**
+ * A fetch invalidates what it fetched, and nothing else.
+ *
+ * Clearing every pull request's regions after any fetch made a single push cost a rescan of
+ * the whole repository, which is most of what made a busy repository slow.
+ */
+test('invalidating fetched pull requests keeps everyone else cached', async () => {
+  const h = harness();
+  const mine = pullRequest();
+  const other = { ...pullRequest(), number: 2, headRefOid: 'other-head' };
+  h.store.setPullRequests([mine, other]);
+
+  h.store.cacheRegions(FILE, mine.number, mine.headRefOid, 'base', []);
+  h.store.cacheRegions(FILE, other.number, other.headRefOid, 'base', []);
+
+  let fired = 0;
+  const subscription = h.store.onDidChange(() => {
+    fired++;
+  });
+  h.store.invalidatePullRequests([mine.number]);
+
+  assert.equal(fired, 1, 'the surfaces still hear that heads landed');
+  assert.equal(h.store.cachedRegions(FILE, mine.number, mine.headRefOid), undefined);
+  assert.deepEqual(
+    h.store.cachedRegions(FILE, other.number, other.headRefOid),
+    [],
+    'a pull request that was not fetched keeps its regions'
+  );
+
+  subscription.dispose();
   h.dispose();
 });

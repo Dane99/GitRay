@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alignLines, splitLines } from '../../src/model/lineMap.js';
+import { alignLines, alignLinesWithin, splitLines } from '../../src/model/lineMap.js';
 
 const base = splitLines(
   ['line0', 'line1', 'line2', 'line3', 'line4', 'line5', 'line6', 'line7'].join('\n')
@@ -177,4 +177,44 @@ test('splitLines matches how an editor counts a trailing newline', () => {
 test('an empty base file maps everything to the start', () => {
   const map = alignLines([''], ['one', 'two']);
   assert.equal(map.toBuffer(0), 0);
+});
+
+// --- Bounded alignment ---------------------------------------------------------------
+
+test('trimming a shared prefix and suffix does not move anything', () => {
+  const long = Array.from({ length: 200 }, (_, i) => `line${i}`);
+  const buffer = [...long.slice(0, 100), 'inserted', ...long.slice(100, 150), ...long.slice(151)];
+  const map = alignLines(long, buffer);
+
+  assert.deepEqual(map.localEdits, [
+    { start: 100, end: 100 },
+    { start: 150, end: 151 }
+  ]);
+  assert.deepEqual(map.toBufferRange({ start: 120, end: 122 }), { start: 121, end: 123 });
+  assert.deepEqual(map.toBufferRange({ start: 190, end: 191 }), { start: 190, end: 191 });
+});
+
+test('a pure insertion or deletion in the middle needs no diff at all', () => {
+  const base = ['a', 'b', 'c', 'd'];
+  assert.deepEqual(alignLines(base, ['a', 'b', 'x', 'y', 'c', 'd']).localEdits, [
+    { start: 2, end: 2 }
+  ]);
+  assert.deepEqual(alignLines(base, ['a', 'd']).localEdits, [{ start: 1, end: 3 }]);
+});
+
+test('two copies too far apart to align are given up on, not ground through', () => {
+  const base = Array.from({ length: 2000 }, (_, i) => `base${i}`);
+  const buffer = Array.from({ length: 2000 }, (_, i) => `buffer${i}`);
+
+  const started = Date.now();
+  const map = alignLinesWithin(base, buffer, { maxEditLength: 100, timeoutMs: 1000 });
+  assert.equal(map, undefined, 'the edit length is past the limit');
+  assert.ok(Date.now() - started < 1000, 'and giving up is quick');
+});
+
+test('within the limits, a bounded alignment is the same alignment', () => {
+  const buffer = [...base.slice(0, 3), 'changed', ...base.slice(4)];
+  const bounded = alignLinesWithin(base, buffer);
+  assert.ok(bounded);
+  assert.deepEqual(bounded.localEdits, alignLines(base, buffer).localEdits);
 });
