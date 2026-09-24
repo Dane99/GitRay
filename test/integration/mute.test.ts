@@ -78,7 +78,9 @@ function fakeRepository() {
     uriFor: (path: string) => Uri.file(`${ROOT}/${path}`),
     relativePath: () => undefined,
     git: { headSha: async () => 'head1' },
-    github: { pullRequestUrl: async () => undefined }
+    github: { pullRequestUrl: async () => undefined },
+    // A sync pass runs inside the selector's pin; with no remotes to read, it just runs.
+    remotes: { pinned: <T>(work: () => Promise<T>) => work() }
   } as never;
 }
 

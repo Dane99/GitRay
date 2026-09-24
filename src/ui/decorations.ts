@@ -34,6 +34,14 @@ interface LineBucket {
   seam: boolean;
   flash: boolean;
   regions: ResolvedRegion[];
+  /** `signature(bucket)`, computed once the bucket is complete. */
+  key?: string;
+}
+
+/** What the last full paint of an editor produced, so annotations can be redrawn alone. */
+interface Painted {
+  buckets: ReadonlyMap<number, LineBucket>;
+  pullRequests: ReadonlyMap<number, PullRequest>;
 }
 
 export class DecorationPainter implements vscode.Disposable {
@@ -41,6 +49,7 @@ export class DecorationPainter implements vscode.Disposable {
   private annotationType: vscode.TextEditorDecorationType;
   /** Which decoration types each editor is currently using, so stale ones can be cleared. */
   private applied = new WeakMap<vscode.TextEditor, Set<string>>();
+  private painted = new WeakMap<vscode.TextEditor, Painted>();
   private seenRegions = new Map<string, Set<string>>();
   private flashTimers = new Map<string, NodeJS.Timeout>();
   private disposables: vscode.Disposable[] = [];
@@ -83,7 +92,24 @@ export class DecorationPainter implements vscode.Disposable {
       }
       active.clear();
     }
+    this.painted.delete(editor);
     editor.setDecorations(this.annotationType, []);
+  }
+
+  /**
+   * Redraw only the end-of-line notes, from the editor's last full paint.
+   *
+   * The cursor decides which region gets a note and nothing else does, so a cursor move
+   * needs this and not a full paint — which rebuilds every hover card and resends every
+   * gutter decoration to the renderer.
+   */
+  paintAnnotations(editor: vscode.TextEditor, config: Config): void {
+    const painted = this.painted.get(editor);
+    if (!painted || config.decorationMode === 'off' || !config.showInlineAnnotations) return;
+    editor.setDecorations(
+      this.annotationType,
+      buildAnnotations(painted.buckets, editor, painted.pullRequests)
+    );
   }
 
   paint(
@@ -109,7 +135,7 @@ export class DecorationPainter implements vscode.Disposable {
     const annotations: vscode.DecorationOptions[] = [];
 
     for (const run of collapseRuns(buckets)) {
-      const key = signature(run.bucket);
+      const key = run.bucket.key ?? signature(run.bucket);
 
       // Cover the actual text of the run. `run.end` is inclusive, so stopping at column 0
       // of it would leave a single-line region as an empty range — which still paints a
@@ -152,6 +178,7 @@ export class DecorationPainter implements vscode.Disposable {
       nowApplied.add(key);
     }
     this.applied.set(editor, nowApplied);
+    this.painted.set(editor, { buckets, pullRequests });
     editor.setDecorations(this.annotationType, annotations);
   }
 
@@ -232,7 +259,15 @@ function bucketByLine(
 ): Map<number, LineBucket> {
   const buckets = new Map<number, LineBucket>();
 
-  const add = (line: number, region: ResolvedRegion, seam: boolean) => {
+  // Hue and arrival are properties of the region, not the line, so they are worked out once
+  // per region rather than once for every line it spans.
+  const add = (
+    line: number,
+    region: ResolvedRegion,
+    hue: number,
+    flash: boolean,
+    seam: boolean
+  ) => {
     if (line < 0 || line >= lineCount) return;
 
     let bucket = buckets.get(line);
@@ -241,28 +276,30 @@ function bucketByLine(
       buckets.set(line, bucket);
     }
 
-    const hue = hueFor(region);
     if (!bucket.hues.includes(hue)) bucket.hues.push(hue);
     if (rank(region.severity) > rank(bucket.severity)) bucket.severity = region.severity;
     bucket.seam ||= seam;
-    bucket.flash ||= flashing.has(regionKey(region));
+    bucket.flash ||= flash;
     if (!bucket.regions.includes(region)) bucket.regions.push(region);
   };
 
   for (const region of regions) {
+    const hue = hueFor(region);
+    const flash = flashing.size > 0 && flashing.has(regionKey(region));
     const { start, end } = region.range;
     if (start === end) {
       // An insertion has no lines of its own; mark the seam it landed on.
-      add(Math.min(start, lineCount - 1), region, true);
+      add(Math.min(start, lineCount - 1), region, hue, flash, true);
       continue;
     }
     for (let line = start; line < end; line++) {
-      add(line, region, false);
+      add(line, region, hue, flash, false);
     }
   }
 
   for (const bucket of buckets.values()) {
     bucket.hues.sort((a, b) => a - b);
+    bucket.key = signature(bucket);
   }
 
   return buckets;
@@ -282,7 +319,7 @@ function collapseRuns(buckets: ReadonlyMap<number, LineBucket>): Run[] {
   let current: Run | undefined;
   for (const line of lines) {
     const bucket = buckets.get(line) as LineBucket;
-    if (current && line === current.end + 1 && signature(bucket) === signature(current.bucket)) {
+    if (current && line === current.end + 1 && bucket.key === current.bucket.key) {
       current.end = line;
       // Keep the hover complete across the merged span.
       for (const region of bucket.regions) {

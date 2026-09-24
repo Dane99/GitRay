@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.15
+
+- **GitRay is fast again.** It worked, but in a busy repository it was slow enough to get in
+  the way of typing. Nothing about what it shows has changed; it just does far less work to
+  show it.
+  - **Moving the cursor no longer repaints the whole file.** Every selection change — which
+    includes every keystroke — rebuilt every hover card and resent every gutter mark to the
+    editor. Now only the end-of-line note is redrawn, and only when the cursor changes line.
+  - **Git is asked in bulk instead of once per file.** A collision scan used to spawn a diff
+    per file per pull request, a log per file for the mainline, and a `git show` per base
+    copy, one after another — up to about a thousand processes per scan. A pull request's
+    diff is now read once for every file it touches, the mainline once for the whole range,
+    and file contents come through a single long-lived `git cat-file --batch`.
+  - **A burst of changes is handled once.** A sync can change several things in a row, and
+    each change used to repaint every surface and start its own scan. They are now gathered
+    for a moment and handled together, a scan that finds nothing new announces nothing, and
+    the explorer is told only about the files whose badge actually changed.
+  - **Large, heavily edited files cannot freeze the editor.** Lining up your copy of a file
+    against its base could take seconds on a file with thousands of changed lines. That work
+    now stops after a quarter of a second, and the file falls back to a file-level indicator
+    until it is saved.
+  - **An idle poll costs a handful of git calls rather than dozens.** Which pull request heads
+    are already local is read in one call instead of one per pull request, and the remote
+    list and shallow-clone check are read once per pass.
+  - **Caches survive a scan.** They were smaller than a single scan and evicted oldest-first,
+    so every scan started cold. They now hold a full scan and evict least-recently-used.
+
 ## 0.1.14
 
 - **The README's account of degraded mode was wrong about two of its three cases.** It said

@@ -27,7 +27,9 @@ export class Scheduler implements vscode.Disposable {
 
   constructor(
     private readonly engine: SyncEngine,
-    private readonly repository: Repository
+    private readonly repository: Repository,
+    /** Runs at the start of every pass, before the engine does. */
+    private readonly beforeSync: () => void = () => {}
   ) {}
 
   start(): void {
@@ -82,6 +84,7 @@ export class Scheduler implements vscode.Disposable {
       const config = readConfig(this.repository.folder.uri);
       // The engine reports transient failures through its return value rather than by
       // throwing — see SyncEngine.sync. The catch below is only a safety net.
+      this.beforeSync();
       const healthy = await this.engine.sync(config);
       this.consecutiveFailures = healthy ? 0 : this.consecutiveFailures + 1;
     } catch (error) {

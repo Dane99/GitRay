@@ -67,6 +67,9 @@ export function preferredRemote(names: readonly string[]): string | undefined {
 export class RemoteSelector {
   private cached: RemoteChoice | undefined;
   private cacheKey: string | undefined;
+  /** How many `pinned` calls are running; the list below is only shared while one is. */
+  private pins = 0;
+  private pinnedNames: Promise<string[]> | undefined;
 
   constructor(
     private readonly git: Git,
@@ -83,11 +86,12 @@ export class RemoteSelector {
    * The remote *list* is read on every call rather than cached, because `git remote add
    * upstream …` is the first thing anyone reaches for and it must not need a window reload
    * to take effect — the whole point of this module is that the fork case works. That costs
-   * one `git remote`, which is a local read sitting next to the fetches it decides.
+   * one `git remote`, which is a local read sitting next to the fetches it decides — and
+   * during a sync pass it is shared across the whole pass; see `pinned`.
    */
   async choose(): Promise<RemoteChoice> {
     const configured = this.configured().trim();
-    const names = await this.git.remotes();
+    const names = await this.remoteNames();
 
     const key = [configured, names.join(' ')].join('\0');
     if (this.cached && this.cacheKey === key) return this.cached;
@@ -96,6 +100,31 @@ export class RemoteSelector {
     this.cacheKey = key;
     this.cached = choice;
     return choice;
+  }
+
+  /**
+   * Run `work` with the remote list read at most once.
+   *
+   * A sync pass asks which remote to use from half a dozen places — the probe, the ref
+   * fetch, the mainline, the change detector — and each asking was a `git remote` spawn.
+   * Within one pass the answer cannot usefully change, so it is read once and shared; the
+   * next pass reads it fresh, which is all "noticed without a reload" ever needed.
+   */
+  async pinned<T>(work: () => Promise<T>): Promise<T> {
+    const outermost = this.pins === 0;
+    this.pins++;
+    try {
+      return await work();
+    } finally {
+      this.pins--;
+      if (outermost) this.pinnedNames = undefined;
+    }
+  }
+
+  private remoteNames(): Promise<string[]> {
+    if (this.pins === 0) return this.git.remotes();
+    this.pinnedNames ??= this.git.remotes();
+    return this.pinnedNames;
   }
 
   /** The remote to fetch from, or undefined when there is not one to fetch from. */

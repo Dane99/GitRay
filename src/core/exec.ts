@@ -52,7 +52,7 @@ const DEFAULT_MAX_BUFFER = 32 * 1024 * 1024;
  * would otherwise make GitRay's background polling contend with the user's own git
  * operations.
  */
-function childEnv(): NodeJS.ProcessEnv {
+export function gitEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
@@ -71,7 +71,7 @@ export function run(
     cwd: options.cwd,
     timeout: options.timeout ?? DEFAULT_TIMEOUT,
     maxBuffer: options.maxBuffer ?? DEFAULT_MAX_BUFFER,
-    env: childEnv(),
+    env: gitEnv(),
     windowsHide: true,
     // Never route through a shell: arguments must stay arguments.
     shell: false

@@ -17,6 +17,11 @@
  * lot. Its base is where your branch left the mainline — the commit this file already
  * aligns the buffer against, to work out which edits are yours — so its regions cost one
  * diff and reuse an alignment that was computed anyway. See `mainlineRegions`.
+ *
+ * Git is asked in bulk, never per file. A pull request's diff is read once for every file
+ * it touches, the mainline's once for the whole range, and base copies come through one
+ * long-lived `cat-file` process — a collision scan over two hundred files used to be a
+ * thousand process spawns, one after another.
  */
 
 import type {
@@ -28,11 +33,12 @@ import type {
   PullRequest,
   ResolvedRegion
 } from '../core/types.js';
-import { compareOrigins } from '../core/types.js';
+import { compareOrigins, MAX_SCANNED_FILES } from '../core/types.js';
 import type { Git } from '../providers/git.js';
-import { prRef } from '../providers/git.js';
+import { GITRAY_NAMESPACE, prRef } from '../providers/git.js';
 import type { RemoteSelector } from '../providers/remoteSelection.js';
-import { alignLines, splitLines, type Alignment } from './lineMap.js';
+import type { FileDiff } from './diffParse.js';
+import { alignLinesWithin, splitLines, type Alignment } from './lineMap.js';
 import { classifyProximity } from './collision.js';
 import type { Store } from './store.js';
 import { log } from '../core/log.js';
@@ -45,23 +51,58 @@ export interface AnalyzeOptions {
 }
 
 /**
- * Bounded caches.
+ * Bounded caches, evicted least-recently-used.
  *
  * Base blobs and alignments are the expensive parts. Blobs are keyed by commit and path
  * so they survive editing; alignments additionally include the document version, so they
  * fall out naturally as you type.
+ *
+ * Both are sized to hold a whole collision scan — up to two bases per file — with room left
+ * for the editors on screen. Anything smaller and a scan evicts its own entries before the
+ * next scan can reuse them, which turns every scan into a cold one.
  */
-const MAX_BLOBS = 256;
-const MAX_ALIGNMENTS = 64;
-const MAX_DRIFT = 256;
+const MAX_BLOBS = MAX_SCANNED_FILES * 2 + 64;
+const MAX_ALIGNMENTS = MAX_SCANNED_FILES * 2 + 64;
+/** Mainline ranges kept. The tip only moves forward, so older ranges are rarely revisited. */
+const MAX_DRIFT_RANGES = 4;
+
+/**
+ * Output accepted from a whole-range mainline diff.
+ *
+ * A branch left behind for a while can be a large diff. Past this the per-file fallback
+ * takes over rather than drift going dark.
+ */
+const DRIFT_DIFF_MAX_BUFFER = 128 * 1024 * 1024;
+
+/**
+ * Past this many characters of pathspec, a pull request is diffed without one.
+ *
+ * Windows caps a command line at 32K characters. The diff is filtered down to the files that
+ * matter afterwards either way; the pathspec only saves git the work.
+ */
+const MAX_PATHSPEC_CHARS = 16_000;
+
+/** An alignment that was tried and abandoned, so it is not tried again for this version. */
+const TOO_FAR_APART = null;
+
+/** Every path in a range of history, mapped to the regions changed there. */
+type DriftIndex = (path: string) => Promise<ChangeRegion[]>;
 
 export class Analyzer {
   private readonly mergeBases = new Map<string, string | undefined>();
   private readonly mainlines = new Map<string, string | undefined>();
   private readonly blobs = new Map<string, string[]>();
-  private readonly alignments = new Map<string, Alignment>();
-  /** Mainline drift per file, keyed by the base and tip it was computed between. */
-  private readonly drift = new Map<string, ChangeRegion[]>();
+  private readonly alignments = new Map<string, Alignment | typeof TOO_FAR_APART>();
+  /** Base commit and path pairs whose alignment was abandoned, until the file is saved. */
+  private readonly farApart = new Set<string>();
+  /** Mainline drift for every file, keyed by the base and tip it was computed between. */
+  private readonly drift = new Map<string, DriftIndex>();
+  /** Pull request diffs being read right now, so concurrent analyses share one. */
+  private readonly loading = new Map<string, Promise<void>>();
+  /** Which of GitRay's refs exist, read once and reused until something changes them. */
+  private refs: Promise<Map<string, string>> | undefined;
+  /** Each pull request's paths as a set, so relevance is a lookup rather than a scan. */
+  private readonly paths = new WeakMap<PullRequest, ReadonlySet<string>>();
 
   constructor(
     private readonly git: Git,
@@ -70,19 +111,40 @@ export class Analyzer {
     private readonly remotes: RemoteSelector
   ) {}
 
-  /** Drop everything derived from git state. Call when HEAD moves. */
+  /**
+   * Drop everything derived from git state. Call when HEAD moves.
+   *
+   * Base copies are kept: they are keyed by commit, and what a commit contains never
+   * changes, so a checkout does not make any of them wrong.
+   */
   reset(): void {
     this.mergeBases.clear();
     this.mainlines.clear();
-    this.blobs.clear();
     this.alignments.clear();
+    this.farApart.clear();
     this.drift.clear();
+    this.refs = undefined;
+  }
+
+  /**
+   * Forget which refs exist. Call after anything fetches or deletes one.
+   *
+   * The analyzer used to ask git about a pull request's ref before every diff, which made a
+   * pull request whose head is not local — ref fetching turned off, a failed fetch — cost a
+   * process spawn per file per pass, forever. Now it reads every ref once and trusts that
+   * answer until told otherwise.
+   */
+  refsChanged(): void {
+    this.refs = undefined;
   }
 
   /** Drop cached alignments for one file, e.g. when it was saved or reverted. */
   invalidate(path: string): void {
     for (const key of this.alignments.keys()) {
       if (key.includes(`\0${path}\0`)) this.alignments.delete(key);
+    }
+    for (const pair of this.farApart) {
+      if (pair.endsWith(`\0${path}`)) this.farApart.delete(pair);
     }
   }
 
@@ -99,9 +161,7 @@ export class Analyzer {
     pullRequests: readonly PullRequest[],
     options: AnalyzeOptions
   ): Promise<FileAnalysis> {
-    const relevant = pullRequests.filter((pr) =>
-      pr.files.some((file) => file.path === path)
-    );
+    const relevant = pullRequests.filter((pr) => this.pathsOf(pr).has(path));
 
     // The mainline is checked even with nothing open, which is the point: a pull request
     // that merged is gone from the list at exactly the moment its overlap stops being a
@@ -127,6 +187,11 @@ export class Analyzer {
       if (regions.length === 0) continue;
 
       const alignment = await this.alignmentFor(path, baseSha, bufferLines, documentVersion);
+      if (!alignment) {
+        // Your copy and the base are too far apart to line up in reasonable time.
+        degraded = true;
+        continue;
+      }
       const ownEdits = await this.ownEdits(
         path,
         pr.baseRefName,
@@ -152,15 +217,15 @@ export class Analyzer {
     }
 
     if (options.mainline) {
-      resolved.push(
-        ...(await this.mainlineRegions(
-          path,
-          options.mainline,
-          bufferLines,
-          documentVersion,
-          options.proximityLines
-        ))
+      const drift = await this.mainlineRegions(
+        path,
+        options.mainline,
+        bufferLines,
+        documentVersion,
+        options.proximityLines
       );
+      if (drift) resolved.push(...drift);
+      else degraded = true;
     }
 
     if (resolved.length > options.maxRegionsPerFile) {
@@ -189,6 +254,8 @@ export class Analyzer {
    * "someone is working here" earns a quiet mark; a merged commit is history, and marking
    * every line the mainline has moved since you branched would light up half the repository
    * with things that have nothing to do with you. It is only news where it meets your work.
+   *
+   * Undefined when there was drift to place but the alignment was abandoned.
    */
   private async mainlineRegions(
     path: string,
@@ -196,10 +263,10 @@ export class Analyzer {
     bufferLines: string[],
     documentVersion: number,
     proximityLines: number
-  ): Promise<ResolvedRegion[]> {
+  ): Promise<ResolvedRegion[] | undefined> {
     if (mainline.tip === mainline.base) return [];
 
-    const regions = await this.driftRegions(path, mainline);
+    const regions = await this.driftIndexFor(mainline)(path);
     if (regions.length === 0) return [];
 
     const alignment = await this.alignmentFor(
@@ -208,6 +275,7 @@ export class Analyzer {
       bufferLines,
       documentVersion
     );
+    if (!alignment) return undefined;
 
     const resolved: ResolvedRegion[] = [];
     for (const region of regions) {
@@ -230,54 +298,79 @@ export class Analyzer {
   }
 
   /**
-   * The mainline's changes to one file, in the coordinates of where you left it.
+   * The mainline's changes to every file, in the coordinates of where you left it.
    *
-   * Cached against both ends of the range, so the entry falls out on its own when the
-   * mainline is fetched forward or HEAD moves, without anything having to invalidate it.
+   * Read once per range: one diff and one log for the whole of it, rather than a diff and a
+   * log per file. Cached against both ends of the range, so the entry falls out on its own
+   * when the mainline is fetched forward or HEAD moves, without anything having to
+   * invalidate it.
    */
-  private async driftRegions(
-    path: string,
-    mainline: MainlineState
-  ): Promise<ChangeRegion[]> {
-    const key = `${mainline.base}\0${mainline.tip}\0${path}`;
+  private driftIndexFor(mainline: MainlineState): DriftIndex {
+    const key = `${mainline.base}\0${mainline.tip}`;
     const cached = this.drift.get(key);
     if (cached) return cached;
 
+    const loaded = this.loadDrift(mainline);
+    // A failure is not cached: the next pass gets to try again.
+    loaded.catch(() => this.drift.delete(key));
+
+    const index: DriftIndex = async (path) => {
+      const byPath = await loaded;
+      return byPath ? byPath.get(path) ?? [] : this.driftRegionsForPath(path, mainline);
+    };
+
+    while (this.drift.size >= MAX_DRIFT_RANGES) {
+      const oldest = this.drift.keys().next();
+      if (oldest.done) break;
+      this.drift.delete(oldest.value);
+    }
+    this.drift.set(key, index);
+    return index;
+  }
+
+  /** Undefined when the range was too large to diff at once. */
+  private async loadDrift(
+    mainline: MainlineState
+  ): Promise<Map<string, ChangeRegion[]> | undefined> {
+    const [diffs, commits] = await Promise.all([
+      this.git.tryDiffRange(mainline.base, mainline.tip, undefined, {
+        renames: false,
+        maxBuffer: DRIFT_DIFF_MAX_BUFFER
+      }),
+      this.git.commitsByPath(mainline.base, mainline.tip)
+    ]);
+    if (!diffs) {
+      log.debug('mainline diff too large to read at once; reading drift per file');
+      return undefined;
+    }
+
+    const byPath = new Map<string, ChangeRegion[]>();
+    for (const file of diffs) {
+      if (file.isBinary) continue;
+      const fileCommits = commits.get(file.path) ?? [];
+      const regions = driftRegionsFrom(file, mainline, fileCommits);
+      if (regions.length > 0) byPath.set(file.path, regions);
+    }
+    return byPath;
+  }
+
+  /** The one-file form of `loadDrift`, for a range too large to read in one go. */
+  private async driftRegionsForPath(
+    path: string,
+    mainline: MainlineState
+  ): Promise<ChangeRegion[]> {
     const [diffs, commits] = await Promise.all([
       this.git.diffRange(mainline.base, mainline.tip, [path]),
       this.git.commitsIn(mainline.base, mainline.tip, path)
     ]);
-
-    // One origin object shared by every region in the file: they all describe the same
-    // set of commits, and the surfaces read it rather than copying out of it.
-    const origin = {
-      kind: 'mainline' as const,
-      branch: mainline.branch,
-      commits
-    };
-    const author = attributeDrift(commits, mainline.branch);
 
     const regions: ChangeRegion[] = [];
     for (const file of diffs) {
       if (file.isBinary) continue;
       // A pathspec can still return the pre-rename path; accept either side.
       if (file.path !== path && file.oldPath !== path) continue;
-
-      for (const hunk of file.hunks) {
-        regions.push({
-          origin,
-          author,
-          baseSha: mainline.base,
-          baseRange: hunk.baseRange,
-          kind: hunk.kind,
-          removed: hunk.removed,
-          added: hunk.added
-        });
-      }
+      regions.push(...driftRegionsFrom(file, mainline, commits));
     }
-
-    evict(this.drift, MAX_DRIFT);
-    this.drift.set(key, regions);
     return regions;
   }
 
@@ -306,6 +399,8 @@ export class Analyzer {
     if (!mainline) return mergeBaseAlignment.localEdits;
 
     const alignment = await this.alignmentFor(path, mainline, bufferLines, documentVersion);
+    // The same fallback when the mainline copy is too far from yours to line up.
+    if (!alignment) return mergeBaseAlignment.localEdits;
     return alignment.bufferEdits.map((range) => mergeBaseAlignment.toBaseRange(range));
   }
 
@@ -343,7 +438,7 @@ export class Analyzer {
     //
     // Histories that genuinely do not meet — a shallow clone, an unrelated branch — are a
     // stable answer, and those are still remembered so the question is asked once.
-    if (!(await this.git.refOid(prRef(pr.number)))) {
+    if (!(await this.hasRef(pr))) {
       log.debug(`#${pr.number} has not been fetched yet; not caching its missing merge base`);
       return undefined;
     }
@@ -356,7 +451,19 @@ export class Analyzer {
     return base;
   }
 
-  /** A pull request's changes to one file, in base coordinates. */
+  /** Is this pull request's head local? Answered from the ref snapshot. */
+  private async hasRef(pr: PullRequest): Promise<boolean> {
+    this.refs ??= this.git.refOids(GITRAY_NAMESPACE);
+    return (await this.refs).has(prRef(pr.number));
+  }
+
+  /**
+   * A pull request's changes to one file, in base coordinates.
+   *
+   * A miss reads the pull request's diff for *every* file it touches and caches them all,
+   * so the next file asked about — the collision scan asks about all of them in a row — is
+   * already answered.
+   */
   private async regionsFor(
     path: string,
     pr: PullRequest,
@@ -370,66 +477,137 @@ export class Analyzer {
     // because they changed nothing. That empty answer is cached against the head oid, which
     // does not change when the ref is re-fetched — so a pull request muted and unmuted went
     // permanently blank even though its merge base was still cached and correct.
-    if (!(await this.git.refOid(prRef(pr.number)))) return [];
+    if (!(await this.hasRef(pr))) return [];
 
-    const diffs = await this.git.diffRange(baseSha, prRef(pr.number), [path]);
-    const regions: ChangeRegion[] = [];
-
-    for (const file of diffs) {
-      if (file.isBinary) continue;
-      // A pathspec can still return the pre-rename path; accept either side.
-      if (file.path !== path && file.oldPath !== path) continue;
-
-      for (const hunk of file.hunks) {
-        regions.push({
-          origin: { kind: 'pullRequest', prNumber: pr.number },
-          author: pr.author,
-          baseSha,
-          baseRange: hunk.baseRange,
-          kind: hunk.kind,
-          removed: hunk.removed,
-          added: hunk.added
-        });
-      }
+    const key = `${pr.number}\0${pr.headRefOid}\0${baseSha}`;
+    let loading = this.loading.get(key);
+    if (!loading) {
+      loading = this.loadPullRequest(pr, baseSha).finally(() => this.loading.delete(key));
+      this.loading.set(key, loading);
     }
+    await loading;
 
-    this.store.cacheRegions(path, pr.number, pr.headRefOid, baseSha, regions);
-    return regions;
+    return this.store.cachedRegions(path, pr.number, pr.headRefOid) ?? [];
   }
 
-  /** Alignment between a base commit's copy of the file and the live buffer. */
+  /** Read one pull request's diff and cache the regions of every file in it. */
+  private async loadPullRequest(pr: PullRequest, baseSha: string): Promise<void> {
+    const paths = pr.files.map((file) => file.path);
+    const pathspec = paths.reduce((total, path) => total + path.length + 1, 0) <= MAX_PATHSPEC_CHARS
+      ? paths
+      : undefined;
+    // No rename pairing, so each path gets exactly what a diff of that path alone would say.
+    const diffs = await this.git.tryDiffRange(baseSha, prRef(pr.number), pathspec, {
+      renames: false
+    });
+    // A failed diff is not "they changed nothing"; leaving the cache empty lets it retry.
+    if (!diffs) return;
+
+    const byPath = new Map<string, ChangeRegion[]>();
+    for (const file of diffs) {
+      if (file.isBinary) continue;
+      const regions = file.hunks.map((hunk) => ({
+        origin: { kind: 'pullRequest' as const, prNumber: pr.number },
+        author: pr.author,
+        baseSha,
+        baseRange: hunk.baseRange,
+        kind: hunk.kind,
+        removed: hunk.removed,
+        added: hunk.added
+      }));
+      byPath.set(file.path, regions);
+      if (file.oldPath && !byPath.has(file.oldPath)) byPath.set(file.oldPath, regions);
+    }
+
+    // Every file the pull request lists gets an entry, empty ones included, so a file whose
+    // changes are all binary or whitespace-free is not re-diffed on every pass.
+    for (const path of new Set([...paths, ...byPath.keys()])) {
+      this.store.cacheRegions(path, pr.number, pr.headRefOid, baseSha, byPath.get(path) ?? []);
+    }
+  }
+
+  /**
+   * Alignment between a base commit's copy of the file and the live buffer.
+   *
+   * Undefined when the two are too far apart to align within the time budget — see
+   * `alignLinesWithin`. That verdict is cached too, for this document version, so a file
+   * that blew the budget once does not blow it again on every paint.
+   */
   private async alignmentFor(
     path: string,
     baseSha: string,
     bufferLines: string[],
     documentVersion: number
-  ): Promise<Alignment> {
+  ): Promise<Alignment | undefined> {
     const key = `${baseSha}\0${path}\0${documentVersion}`;
-    const cached = this.alignments.get(key);
-    if (cached) return cached;
+    const cached = lruGet(this.alignments, key);
+    if (cached !== undefined) return cached ?? undefined;
+
+    // Typing makes a new version with every pause, and a file rewritten far past the budget
+    // does not come back within it a keystroke later. Retrying would spend the whole budget
+    // again on each pause, so the verdict holds until the file is saved.
+    const pair = `${baseSha}\0${path}`;
+    if (this.farApart.has(pair)) return undefined;
 
     const baseLines = await this.baseLines(baseSha, path);
-    const alignment = alignLines(baseLines, bufferLines);
+    const alignment = alignLinesWithin(baseLines, bufferLines);
+    if (!alignment) {
+      this.farApart.add(pair);
+      log.debug(`${path}: too far from ${baseSha.slice(0, 7)} to align; degrading to file level`);
+    }
 
-    evict(this.alignments, MAX_ALIGNMENTS);
-    this.alignments.set(key, alignment);
+    lruSet(this.alignments, key, alignment ?? TOO_FAR_APART, MAX_ALIGNMENTS);
     return alignment;
   }
 
   private async baseLines(baseSha: string, path: string): Promise<string[]> {
     const key = `${baseSha}\0${path}`;
-    const cached = this.blobs.get(key);
+    const cached = lruGet(this.blobs, key);
     if (cached) return cached;
 
-    const content = await this.git.showFile(baseSha, path);
+    const content = await this.git.readFile(baseSha, path);
     // A file the collaborator created does not exist at the merge base. Treating that as
     // an empty file is correct: everything in your copy is then your own local content.
     const lines = content === undefined ? [''] : splitLines(content);
 
-    evict(this.blobs, MAX_BLOBS);
-    this.blobs.set(key, lines);
+    lruSet(this.blobs, key, lines, MAX_BLOBS);
     return lines;
   }
+
+  private pathsOf(pr: PullRequest): ReadonlySet<string> {
+    let paths = this.paths.get(pr);
+    if (!paths) {
+      paths = new Set(pr.files.map((file) => file.path));
+      this.paths.set(pr, paths);
+    }
+    return paths;
+  }
+}
+
+/** One file's mainline hunks as regions, all sharing one origin. */
+function driftRegionsFrom(
+  file: FileDiff,
+  mainline: MainlineState,
+  commits: readonly MainlineCommit[]
+): ChangeRegion[] {
+  // One origin object shared by every region in the file: they all describe the same
+  // set of commits, and the surfaces read it rather than copying out of it.
+  const origin = {
+    kind: 'mainline' as const,
+    branch: mainline.branch,
+    commits
+  };
+  const author = attributeDrift(commits, mainline.branch);
+
+  return file.hunks.map((hunk) => ({
+    origin,
+    author,
+    baseSha: mainline.base,
+    baseRange: hunk.baseRange,
+    kind: hunk.kind,
+    removed: hunk.removed,
+    added: hunk.added
+  }));
 }
 
 /**
@@ -446,11 +624,22 @@ function attributeDrift(commits: readonly MainlineCommit[], branch: string): str
   return authors.size === 1 && only ? only.author : branch;
 }
 
-/** Drop the oldest entry once a cache is full. Insertion order is Map's iteration order. */
-function evict<K, V>(cache: Map<K, V>, limit: number): void {
+/** Read an entry and mark it as the most recently used. Map iteration order is insertion. */
+function lruGet<K, V>(cache: Map<K, V>, key: K): V | undefined {
+  if (!cache.has(key)) return undefined;
+  const value = cache.get(key) as V;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+/** Insert an entry, evicting the least recently used ones to stay within `limit`. */
+function lruSet<K, V>(cache: Map<K, V>, key: K, value: V, limit: number): void {
+  cache.delete(key);
   while (cache.size >= limit) {
     const oldest = cache.keys().next();
     if (oldest.done) return;
     cache.delete(oldest.value);
   }
+  cache.set(key, value);
 }

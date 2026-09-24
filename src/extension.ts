@@ -11,6 +11,7 @@
 
 import * as vscode from 'vscode';
 import { initLog, log } from './core/log.js';
+import { trackConfigChanges } from './core/config.js';
 import { Workspace } from './workspace.js';
 import { PulseTreeProvider } from './ui/tree.js';
 import { GitRayFileDecorationProvider } from './ui/fileDecorations.js';
@@ -24,6 +25,8 @@ let active: vscode.Disposable | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   context.subscriptions.push(initLog());
+  // First, before any surface subscribes to settings changes. See trackConfigChanges.
+  context.subscriptions.push(trackConfigChanges());
   log.info('GitRay activating');
 
   const workspace = new Workspace();
@@ -89,12 +92,14 @@ function build(context: vscode.ExtensionContext, workspace: Workspace): vscode.D
     }
   });
 
+  // Published only when it flips. Each `setContext` is a round trip to the renderer, and
+  // the answer is the same for almost every change the workspace announces.
+  let hasCollisions: boolean | undefined;
   const collisionContext = workspace.onDidChange(() => {
-    void vscode.commands.executeCommand(
-      'setContext',
-      'gitray.hasCollisions',
-      workspace.collisionCount() > 0
-    );
+    const next = workspace.collisionCount() > 0;
+    if (next === hasCollisions) return;
+    hasCollisions = next;
+    void vscode.commands.executeCommand('setContext', 'gitray.hasCollisions', next);
   });
 
   return vscode.Disposable.from(

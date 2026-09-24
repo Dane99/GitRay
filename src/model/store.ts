@@ -34,6 +34,10 @@ interface RegionCacheEntry {
 
 export class Store implements vscode.Disposable {
   private pullRequests = new Map<number, PullRequest>();
+  /** `pullRequests` in display order, built once per change rather than on every read. */
+  private sorted: readonly PullRequest[] = [];
+  /** The pull requests touching each path, most recently updated first. */
+  private byPath = new Map<string, readonly PullRequest[]>();
   private muted = new Map<number, PullRequest>();
   private summaries = new Map<string, FileSummary>();
   private hues = new Map<string, number>();
@@ -59,6 +63,7 @@ export class Store implements vscode.Disposable {
     }
 
     this.pullRequests = next;
+    this.sorted = [...next.values()].sort(byUpdatedDescending);
 
     for (const number of this.pullRequests.keys()) {
       previous.delete(number);
@@ -106,12 +111,26 @@ export class Store implements vscode.Disposable {
       }
     }
     this.summaries = summaries;
+
+    const byPath = new Map<string, PullRequest[]>();
+    for (const pr of this.sorted) {
+      for (const file of pr.files) {
+        const list = byPath.get(file.path);
+        if (!list) byPath.set(file.path, [pr]);
+        else if (list[list.length - 1] !== pr) list.push(pr);
+      }
+    }
+    this.byPath = byPath;
   }
 
-  allPullRequests(): PullRequest[] {
-    return [...this.pullRequests.values()].sort(
-      (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-    );
+  /**
+   * Every open pull request, most recently updated first.
+   *
+   * Read on every paint and every analysis, so it is sorted once when the list changes and
+   * shared from then on — which is also why callers get it read-only.
+   */
+  allPullRequests(): readonly PullRequest[] {
+    return this.sorted;
   }
 
   // --- Muted ---------------------------------------------------------------------------
@@ -145,7 +164,7 @@ export class Store implements vscode.Disposable {
     const wanted = author.toLowerCase();
     return [...this.muted.values()]
       .filter((pr) => pr.author.toLowerCase() === wanted)
-      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+      .sort(byUpdatedDescending);
   }
 
   pullRequest(number: number): PullRequest | undefined {
@@ -153,13 +172,8 @@ export class Store implements vscode.Disposable {
   }
 
   /** Pull requests touching a repo-relative path, most recently updated first. */
-  pullRequestsForPath(path: string): PullRequest[] {
-    const summary = this.summaries.get(path);
-    if (!summary) return [];
-    return summary.prNumbers
-      .map((number) => this.pullRequests.get(number))
-      .filter((pr): pr is PullRequest => pr !== undefined)
-      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  pullRequestsForPath(path: string): readonly PullRequest[] {
+    return this.byPath.get(path) ?? [];
   }
 
   fileSummary(path: string): FileSummary | undefined {
@@ -242,6 +256,21 @@ export class Store implements vscode.Disposable {
     this.onDidChangeEmitter.fire();
   }
 
+  /**
+   * `invalidateAll` for just these pull requests, which is what a fetch calls for.
+   *
+   * Only the heads that were fetched have new objects behind them. Dropping every other
+   * pull request's regions too made the next scan recompute the whole repository after any
+   * single push.
+   */
+  invalidatePullRequests(numbers: readonly number[]): void {
+    const wanted = new Set(numbers);
+    for (const key of this.regions.keys()) {
+      if (wanted.has(prNumberFromKey(key))) this.regions.delete(key);
+    }
+    this.onDidChangeEmitter.fire();
+  }
+
   // --- Status ------------------------------------------------------------------------
 
   /**
@@ -270,6 +299,8 @@ export class Store implements vscode.Disposable {
   /** Reset to nothing, e.g. when the workspace stops being a GitHub repository. */
   clear(): void {
     this.pullRequests.clear();
+    this.sorted = [];
+    this.byPath.clear();
     this.muted.clear();
     this.summaries.clear();
     this.regions.clear();
@@ -338,6 +369,10 @@ function samePullRequests(
     }
   }
   return true;
+}
+
+function byUpdatedDescending(a: PullRequest, b: PullRequest): number {
+  return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
 }
 
 // Region cache keys embed the pull request number so a single pull request's entries can

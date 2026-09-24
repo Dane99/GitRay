@@ -7,6 +7,7 @@
  */
 
 import { run, CommandError } from '../core/exec.js';
+import { BlobReader } from './blobReader.js';
 import { parseUnifiedDiff, type FileDiff } from '../model/diffParse.js';
 import type { MainlineCommit } from '../core/types.js';
 import { MAX_LOGGED_COMMITS } from '../core/types.js';
@@ -33,8 +34,25 @@ export function mainlineRef(branch: string): string {
 }
 
 
+/**
+ * How many mainline commits `commitsByPath` reads in one go.
+ *
+ * Far more than any hover will list, and enough that only a branch left behind for months
+ * runs past it — in which case the oldest commits go unattributed rather than the whole
+ * range costing an unbounded log.
+ */
+const MAX_RANGE_COMMITS = 2000;
+
 export class Git {
+  private blobReader: BlobReader | undefined;
+
   constructor(private readonly cwd: string) {}
+
+  /** Stop the long-lived blob reader, if one was started. */
+  dispose(): void {
+    this.blobReader?.dispose();
+    this.blobReader = undefined;
+  }
 
   private async git(args: string[], okExitCodes?: number[]): Promise<string> {
     const result = await run(
@@ -122,6 +140,27 @@ export class Git {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Every ref under a prefix, with the commit it points at, in one call.
+   *
+   * The batch form of `refOid`. A sync pass needs to know which pull request heads are
+   * already local, and asking one ref at a time was a process spawn per pull request on
+   * every poll.
+   */
+  async refOids(prefix: string): Promise<Map<string, string>> {
+    const refs = new Map<string, string>();
+    try {
+      const out = await this.git(['for-each-ref', '--format=%(objectname) %(refname)', prefix]);
+      for (const line of out.split('\n')) {
+        const space = line.indexOf(' ');
+        if (space > 0) refs.set(line.slice(space + 1).trim(), line.slice(0, space));
+      }
+    } catch {
+      // No refs is the answer every caller can already handle.
+    }
+    return refs;
   }
 
   /**
@@ -328,6 +367,55 @@ export class Git {
     }
   }
 
+  /**
+   * `commitsIn` for every path in the range at once, keyed by path.
+   *
+   * One log instead of one per file. `-m --first-parent` makes a merge commit list the files
+   * it changed relative to the mainline, which is what a per-path `--first-parent` log
+   * matches on; `--no-renames` lists both sides of a rename, so either name finds it. Each
+   * path keeps at most `limit` commits, newest first, the same as `commitsIn`.
+   */
+  async commitsByPath(
+    fromSha: string,
+    toRef: string,
+    limit = MAX_LOGGED_COMMITS
+  ): Promise<Map<string, MainlineCommit[]>> {
+    const byPath = new Map<string, MainlineCommit[]>();
+    let out: string;
+    try {
+      out = await this.git([
+        'log',
+        '-m',
+        '--first-parent',
+        '--no-renames',
+        '--name-only',
+        `--max-count=${MAX_RANGE_COMMITS}`,
+        `--format=${RECORD_SEPARATOR}%h${FIELD_SEPARATOR}%an${FIELD_SEPARATOR}%aI${FIELD_SEPARATOR}%s`,
+        `${fromSha}..${toRef}`
+      ]);
+    } catch {
+      return byPath;
+    }
+
+    for (const record of out.split(RECORD_SEPARATOR)) {
+      const lines = record.split('\n');
+      const commit = parseCommitLine((lines[0] ?? '').trim());
+      if (!commit) continue;
+
+      for (const raw of lines.slice(1)) {
+        const path = raw.trim();
+        if (!path) continue;
+        const commits = byPath.get(path);
+        if (!commits) byPath.set(path, [commit]);
+        // A merge can list the same path more than once; once per commit is enough.
+        else if (commits.length < limit && commits[commits.length - 1] !== commit) {
+          commits.push(commit);
+        }
+      }
+    }
+    return byPath;
+  }
+
   /** Is this a shallow clone? Merge bases with a PR head are unreliable if so. */
   async isShallow(): Promise<boolean> {
     try {
@@ -349,6 +437,23 @@ export class Git {
   }
 
   /**
+   * `showFile` for callers that read many files: served from one long-lived
+   * `git cat-file --batch` process rather than a spawn per file.
+   */
+  async readFile(sha: string, path: string): Promise<string | undefined> {
+    this.blobReader ??= new BlobReader(this.cwd);
+    const pending = this.blobReader.read(sha, path);
+    if (pending) {
+      try {
+        return await pending;
+      } catch {
+        // The reader died or was disposed mid-request; a one-off read still works.
+      }
+    }
+    return this.showFile(sha, path);
+  }
+
+  /**
    * Changes a pull request makes relative to its merge base with HEAD.
    *
    * Zero context lines, because conflict detection needs the minimal touched range —
@@ -357,14 +462,31 @@ export class Git {
   async diffRange(
     fromSha: string,
     toRef: string,
-    paths?: readonly string[]
+    paths?: readonly string[],
+    options: DiffOptions = {}
   ): Promise<FileDiff[]> {
+    const diffs = await this.tryDiffRange(fromSha, toRef, paths, options);
+    return diffs ?? [];
+  }
+
+  /**
+   * `diffRange`, but saying `undefined` when git failed rather than an empty list.
+   *
+   * The batched callers diff many files at once and need to tell "nothing changed" apart
+   * from "that did not work", so they can fall back to asking one file at a time.
+   */
+  async tryDiffRange(
+    fromSha: string,
+    toRef: string,
+    paths?: readonly string[],
+    options: DiffOptions = {}
+  ): Promise<FileDiff[] | undefined> {
     const args = [
       'diff',
       '--unified=0',
       '--no-color',
       '--no-ext-diff',
-      '--find-renames',
+      options.renames === false ? '--no-renames' : '--find-renames',
       '--diff-algorithm=histogram',
       fromSha,
       toRef
@@ -373,9 +495,16 @@ export class Git {
       args.push('--', ...paths);
     }
     try {
-      return parseUnifiedDiff(await this.git(args));
+      const result = await run(
+        'git',
+        // Pathspecs here are file names from a pull request, not patterns: a file called
+        // `[id].tsx` must match itself rather than `i.tsx` and `d.tsx`.
+        ['-c', 'core.quotePath=false', '--literal-pathspecs', ...args],
+        { cwd: this.cwd, maxBuffer: options.maxBuffer }
+      );
+      return parseUnifiedDiff(result.stdout);
     } catch (error) {
-      if (error instanceof CommandError) return [];
+      if (error instanceof CommandError) return undefined;
       throw error;
     }
   }
@@ -497,6 +626,18 @@ export class Git {
   }
 }
 
+export interface DiffOptions {
+  /**
+   * False to report a rename as a deletion plus an addition.
+   *
+   * A diff limited to one path cannot pair a rename anyway, so this is what makes a diff over
+   * many paths answer each path exactly as a one-path diff would have.
+   */
+  renames?: boolean;
+  /** Bytes of output to accept, for diffs spanning a whole range of history. */
+  maxBuffer?: number;
+}
+
 /** Everything `checkoutPullRequest` needs to know that git cannot work out for itself. */
 export interface PullRequestCheckout {
   prNumber: number;
@@ -514,6 +655,8 @@ export interface PullRequestCheckout {
 
 /** ASCII unit separator: cannot occur in a sha, a name, or a commit subject. */
 const FIELD_SEPARATOR = '\x1f';
+/** ASCII record separator, between commits when a log also lists paths. */
+const RECORD_SEPARATOR = '\x1e';
 
 /**
  * Recover the pull request number a merged commit came from.

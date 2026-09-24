@@ -8,7 +8,7 @@
 
 import * as vscode from 'vscode';
 import type { FileAnalysis, PullRequest } from '../core/types.js';
-import { readConfig } from '../core/config.js';
+import type { Config } from '../core/config.js';
 import { log } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
 import type { Analyzer } from '../model/analyzer.js';
@@ -18,18 +18,31 @@ import { DecorationPainter } from './decorations.js';
 
 const TYPING_DEBOUNCE_MS = 250;
 
+/**
+ * How long a burst of store changes is gathered before the visible editors re-analyze.
+ *
+ * A sync pass can change the store several times in a row, and each change used to start
+ * an analysis of every visible file.
+ */
+const STORE_DEBOUNCE_MS = 50;
+
 export class EditorController implements vscode.Disposable {
   private readonly painter: DecorationPainter;
   private readonly analyses = new Map<string, FileAnalysis>();
   private readonly pending = new Map<string, NodeJS.Timeout>();
   /** Guards against a slow analysis overwriting a newer one for the same document. */
   private readonly generation = new Map<string, number>();
+  /** The cursor line each editor's annotations were last drawn for. */
+  private readonly cursorLines = new WeakMap<vscode.TextEditor, number>();
+  /** The open pull requests by number, rebuilt only when the store's list changes. */
+  private byNumber: { source: readonly PullRequest[]; map: Map<number, PullRequest> } | undefined;
   private disposables: vscode.Disposable[] = [];
 
   constructor(
     private readonly repository: Repository,
     private readonly store: Store,
-    private readonly analyzer: Analyzer
+    private readonly analyzer: Analyzer,
+    private readonly config: () => Config
   ) {
     this.painter = new DecorationPainter(repository.root, (uri) => this.schedule(uri, 0));
 
@@ -58,14 +71,19 @@ export class EditorController implements vscode.Disposable {
         if (path) this.painter.forget(path);
       }),
 
-      // Selection moves change which region gets an inline annotation, so repaint from
-      // the cached analysis. No git work is involved.
+      // Selection moves change which region gets an inline annotation, and nothing else.
+      // So only the annotation is redrawn, and only when the cursor changed line — typing
+      // moves the selection on every keystroke, and repainting every gutter mark and
+      // rebuilding every hover card each time is what made typing lag.
       vscode.window.onDidChangeTextEditorSelection((event) => {
-        const analysis = this.analyses.get(event.textEditor.document.uri.toString());
-        if (analysis) this.paint(event.textEditor, analysis);
+        const editor = event.textEditor;
+        const line = editor.selection.active.line;
+        if (this.cursorLines.get(editor) === line) return;
+        this.cursorLines.set(editor, line);
+        this.painter.paintAnnotations(editor, this.config());
       }),
 
-      this.store.onDidChange(() => this.refreshVisible())
+      this.store.onDidChange(() => this.refreshVisible(STORE_DEBOUNCE_MS))
     );
   }
 
@@ -73,9 +91,9 @@ export class EditorController implements vscode.Disposable {
     return uri.scheme === 'file' && this.repository.relativePath(uri) !== undefined;
   }
 
-  refreshVisible(): void {
+  refreshVisible(delay = 0): void {
     for (const editor of vscode.window.visibleTextEditors) {
-      if (this.tracks(editor.document.uri)) this.schedule(editor.document.uri, 0);
+      if (this.tracks(editor.document.uri)) this.schedule(editor.document.uri, delay);
       else this.painter.clear(editor);
     }
   }
@@ -104,7 +122,7 @@ export class EditorController implements vscode.Disposable {
     );
     if (editors.length === 0) return;
 
-    const config = readConfig(this.repository.folder.uri);
+    const config = this.config();
     if (matchesAny(relativePath, config.ignoreGlobs)) {
       for (const editor of editors) this.painter.clear(editor);
       return;
@@ -140,17 +158,22 @@ export class EditorController implements vscode.Disposable {
   }
 
   private paint(editor: vscode.TextEditor, analysis: FileAnalysis): void {
-    const config = readConfig(this.repository.folder.uri);
-    const pullRequests = new Map<number, PullRequest>(
-      this.store.allPullRequests().map((pr) => [pr.number, pr])
-    );
+    this.cursorLines.set(editor, editor.selection.active.line);
     this.painter.paint(
       editor,
       analysis,
-      pullRequests,
+      this.pullRequestsByNumber(),
       (region) => this.store.hueForRegion(region),
-      config
+      this.config()
     );
+  }
+
+  private pullRequestsByNumber(): Map<number, PullRequest> {
+    const source = this.store.allPullRequests();
+    if (this.byNumber?.source !== source) {
+      this.byNumber = { source, map: new Map(source.map((pr) => [pr.number, pr])) };
+    }
+    return this.byNumber.map;
   }
 
   analysisFor(uri: vscode.Uri): FileAnalysis | undefined {

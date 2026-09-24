@@ -230,6 +230,13 @@ export const MAX_LOGGED_COMMITS = 20;
 export const MAX_TRACKED_PULL_REQUESTS = 100;
 
 /**
+ * Ceiling on files analyzed per collision scan, so a branch that rewrites the world stays
+ * responsive. The analyzer's caches are sized from it: a cache smaller than one scan is
+ * emptied by every scan before anything in it is reused.
+ */
+export const MAX_SCANNED_FILES = 200;
+
+/**
  * How far behind the mainline is, in the form every surface needs.
  *
  * `count` hitting the cap means the real number is *at least* that, so `display` says

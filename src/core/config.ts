@@ -56,6 +56,33 @@ export function readConfig(scope?: vscode.Uri): Config {
 }
 
 /**
+ * A counter that moves whenever any `gitray.*` setting changes, for caching `readConfig`.
+ *
+ * The listener behind it has to be the first one registered, which is why activation
+ * installs it before building anything: listeners run in registration order, and a surface
+ * that reacts to a settings change by re-reading them must not be handed the old values.
+ * Until it is installed the generation is undefined, and callers must not cache at all.
+ */
+let generation: number | undefined;
+
+export function trackConfigChanges(): vscode.Disposable {
+  generation = 0;
+  const subscription = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('gitray') && generation !== undefined) generation++;
+  });
+  return {
+    dispose: () => {
+      subscription.dispose();
+      generation = undefined;
+    }
+  };
+}
+
+export function configGeneration(): number | undefined {
+  return generation;
+}
+
+/**
  * Is this author muted?
  *
  * GitHub logins are case-insensitive, but the setting is hand-editable and the "Mute
