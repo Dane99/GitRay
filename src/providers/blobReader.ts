@@ -27,7 +27,15 @@ export class BlobReader {
   private child: ChildProcessWithoutNullStreams | undefined;
   /** Requests written to the pipe, oldest first; answers arrive in the same order. */
   private inFlight: Request[] = [];
-  private buffer: Buffer = Buffer.alloc(0);
+  /**
+   * Output not yet parsed, as it arrived. Kept as a list and joined only once enough has
+   * arrived to finish the answer at the front: joining on every chunk re-copied everything
+   * so far each time, which for a generated file several megabytes long is quadratic.
+   */
+  private chunks: Buffer[] = [];
+  private buffered = 0;
+  /** Bytes needed before parsing can make progress. */
+  private needed = 1;
   private idleTimer: NodeJS.Timeout | undefined;
   private disposed = false;
 
@@ -66,11 +74,12 @@ export class BlobReader {
       shell: false
     });
     this.child = child;
-    this.buffer = Buffer.alloc(0);
+    this.reset();
 
     child.stdout.on('data', (chunk: Buffer) => {
-      this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
-      this.drain();
+      this.chunks.push(chunk);
+      this.buffered += chunk.length;
+      if (this.buffered >= this.needed) this.drain();
     });
     // stderr is read only so a chatty git cannot fill the pipe and stall.
     child.stderr.on('data', () => {});
@@ -86,23 +95,40 @@ export class BlobReader {
 
   /** Parse every complete answer in the buffer. */
   private drain(): void {
-    this.parse();
+    const joined =
+      this.chunks.length === 1 ? this.chunks[0] : Buffer.concat(this.chunks, this.buffered);
+    const rest = this.parse(joined);
+    this.chunks = rest.length > 0 ? [rest] : [];
+    this.buffered = rest.length;
     if (this.inFlight.length === 0) this.maybeIdle();
   }
 
-  private parse(): void {
+  private reset(): void {
+    this.chunks = [];
+    this.buffered = 0;
+    this.needed = 1;
+  }
+
+  /** Answer every request whose output is complete, and return what is left over. */
+  private parse(buffer: Buffer): Buffer {
     for (;;) {
       const request = this.inFlight[0];
-      if (!request) return;
+      if (!request) {
+        this.needed = 1;
+        return buffer;
+      }
 
-      const newline = this.buffer.indexOf(0x0a);
-      if (newline === -1) return;
-      const header = this.buffer.subarray(0, newline).toString('utf8');
+      const newline = buffer.indexOf(0x0a);
+      if (newline === -1) {
+        this.needed = buffer.length + 1;
+        return buffer;
+      }
+      const header = buffer.subarray(0, newline).toString('utf8');
 
       // `<spec> missing`, `<spec> ambiguous`, and friends carry no body.
       const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
       if (!match) {
-        this.buffer = this.buffer.subarray(newline + 1);
+        buffer = buffer.subarray(newline + 1);
         this.inFlight.shift();
         request.resolve(undefined);
         continue;
@@ -111,10 +137,13 @@ export class BlobReader {
       const size = Number(match[2]);
       // Header, body, and the newline that terminates every body.
       const end = newline + 1 + size + 1;
-      if (this.buffer.length < end) return;
+      if (buffer.length < end) {
+        this.needed = end;
+        return buffer;
+      }
 
-      const body = this.buffer.subarray(newline + 1, newline + 1 + size);
-      this.buffer = this.buffer.subarray(end);
+      const body = buffer.subarray(newline + 1, newline + 1 + size);
+      buffer = buffer.subarray(end);
       this.inFlight.shift();
       request.resolve(match[1] === 'blob' ? body.toString('utf8') : undefined);
     }
@@ -159,7 +188,7 @@ export class BlobReader {
     }
     const child = this.child;
     this.child = undefined;
-    this.buffer = Buffer.alloc(0);
+    this.reset();
 
     const pending = this.inFlight;
     this.inFlight = [];

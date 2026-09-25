@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.16
+
+- **Measured against real repositories, and fixed where it fell over.** A new benchmark,
+  `npm run perf`, runs GitRay's real code against microsoft/vscode, kubernetes/kubernetes,
+  facebook/react, and microsoft/TypeScript through a developer's day — startup, polling,
+  refresh, opening a file, typing, moving the cursor, saving, committing — and fails when
+  the editor is held up or the answers change. It found what small repositories never
+  showed. Against 0.1.15, a refresh in microsoft/vscode went from 6.6 s to 0.6 s, a commit
+  in kubernetes from 21 s to 2.6 s, and the longest freeze there from 342 ms to 45 ms.
+  - **Scans look at the files you actually changed.** Your work was measured from each pull
+    request's own merge base, so everything that landed upstream after an old pull request
+    branched counted as yours — in kubernetes, 691 files to analyze for 40 you had edited,
+    and a working-tree diff for each of dozens of merge bases. It is now measured from where
+    your branch left the mainline, which is one diff and exactly your files.
+  - **Lining up a large file no longer freezes the editor.** That work now runs on a
+    separate thread. A file tens of thousands of lines long that has drifted far from its
+    base takes a moment to show its indicators, and nothing else waits for it.
+  - **Committing keeps what a commit cannot change.** A pull request's merge base only moves
+    when it contains a commit you just gained, which after an ordinary commit it never does.
+    A commit used to recompute everything — over a hundred git processes in a busy
+    repository — and now costs a handful.
+  - **One scan per sync, not four.** A sync changes several things over a few seconds, and
+    each change used to start its own scan before the pull request heads had even arrived.
+  - **Git work overlaps instead of queueing,** a few merge bases and diffs at a time, and
+    reading very large generated files no longer slows down quadratically.
+
 ## 0.1.15
 
 - **GitRay is fast again.** It worked, but in a busy repository it was slow enough to get in

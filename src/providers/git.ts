@@ -239,6 +239,35 @@ export class Git {
   }
 
   /**
+   * The commits in `from..to`, or undefined when there are more than `limit` of them.
+   *
+   * For telling a small step forward — a commit, a fast-forward pull — from a jump, which
+   * is what decides whether a HEAD move can keep what was worked out before it.
+   */
+  async commitsBetween(from: string, to: string, limit: number): Promise<string[] | undefined> {
+    try {
+      const out = await this.git(['rev-list', `--max-count=${limit + 1}`, `${from}..${to}`]);
+      const commits = out.split('\n').map((line) => line.trim()).filter(Boolean);
+      return commits.length > limit ? undefined : commits;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The commits that refs under `prefix` point at, for the refs containing any of these. */
+  async refsContainingAny(commits: readonly string[], prefix: string): Promise<Set<string>> {
+    if (commits.length === 0) return new Set();
+    const out = await this.git([
+      'for-each-ref',
+      '--format=%(objectname)',
+      // Repeated, `--contains` matches a ref containing any of them.
+      ...commits.flatMap((commit) => ['--contains', commit]),
+      prefix
+    ]);
+    return new Set(out.split('\n').map((line) => line.trim()).filter(Boolean));
+  }
+
+  /**
    * Common ancestor of HEAD and a pull request head.
    *
    * Undefined when the histories are unrelated, which happens with a rewritten branch or

@@ -38,10 +38,11 @@ import type { Git } from '../providers/git.js';
 import { GITRAY_NAMESPACE, prRef } from '../providers/git.js';
 import type { RemoteSelector } from '../providers/remoteSelection.js';
 import type { FileDiff } from './diffParse.js';
-import { alignLinesWithin, splitLines, type Alignment } from './lineMap.js';
+import { alignLinesAsync, splitLines, type Alignment } from './lineMap.js';
 import { classifyProximity } from './collision.js';
 import type { Store } from './store.js';
 import { log } from '../core/log.js';
+import { inParallel } from '../core/parallel.js';
 
 export interface AnalyzeOptions {
   proximityLines: number;
@@ -82,6 +83,15 @@ const DRIFT_DIFF_MAX_BUFFER = 128 * 1024 * 1024;
  */
 const MAX_PATHSPEC_CHARS = 16_000;
 
+/**
+ * The most commits HEAD can gain and still count as a small step forward. Past it the
+ * `--contains` check would cost more than recomputing, so everything is recomputed.
+ */
+const MAX_HEAD_ADVANCE = 50;
+
+/** Git processes `warm` keeps running at once. */
+const WARM_CONCURRENCY = 4;
+
 /** An alignment that was tried and abandoned, so it is not tried again for this version. */
 const TOO_FAR_APART = null;
 
@@ -93,6 +103,8 @@ export class Analyzer {
   private readonly mainlines = new Map<string, string | undefined>();
   private readonly blobs = new Map<string, string[]>();
   private readonly alignments = new Map<string, Alignment | typeof TOO_FAR_APART>();
+  /** Alignments being computed right now, so concurrent requests share one. */
+  private readonly aligning = new Map<string, Promise<Alignment | undefined>>();
   /** Base commit and path pairs whose alignment was abandoned, until the file is saved. */
   private readonly farApart = new Set<string>();
   /** Mainline drift for every file, keyed by the base and tip it was computed between. */
@@ -123,6 +135,44 @@ export class Analyzer {
     this.alignments.clear();
     this.farApart.clear();
     this.drift.clear();
+    this.refs = undefined;
+  }
+
+  /**
+   * HEAD moved from one commit to another: keep what the move cannot have changed.
+   *
+   * A pull request's merge base with HEAD only moves when one of the commits HEAD gained is
+   * in that pull request — a merge base is the newest commit both sides have, and the only
+   * new commits on your side are the ones you just gained. After a commit or a fast-forward
+   * pull that is almost never true, so almost every merge base survives, and with them the
+   * regions and alignments computed from them. A commit used to recompute all of it, which
+   * in a repository with a hundred open pull requests was a hundred and thirty git processes.
+   *
+   * Anything that is not a small step forward — a checkout, a rebase, an amend — resets
+   * everything, as before.
+   */
+  async headMoved(from: string | undefined, to: string | undefined): Promise<void> {
+    const advanced =
+      from !== undefined &&
+      to !== undefined &&
+      (await this.git.isAncestor(from, to).catch(() => false));
+    const gained = advanced ? await this.git.commitsBetween(from, to, MAX_HEAD_ADVANCE) : undefined;
+    if (!gained) {
+      this.reset();
+      return;
+    }
+
+    const reached = await this.git.refsContainingAny(gained, GITRAY_NAMESPACE).catch(() => undefined);
+    if (!reached) {
+      this.reset();
+      return;
+    }
+    for (const head of [...this.mergeBases.keys()]) {
+      if (reached.has(head)) this.mergeBases.delete(head);
+    }
+    // Where your branch left each mainline: one lookup per base branch, so not worth
+    // reasoning about.
+    this.mainlines.clear();
     this.refs = undefined;
   }
 
@@ -451,6 +501,34 @@ export class Analyzer {
     return base;
   }
 
+  /**
+   * The commit your edits are measured from, for a pull request.
+   *
+   * Where your branch left the pull request's base branch, or the merge base when that
+   * branch is not known locally — the same commit `ownEdits` compares against. That makes
+   * it the one that decides which files count as yours. The pull request's own merge base
+   * does not: everything that landed upstream after an old pull request branched would
+   * count as your change, which in a busy repository is hundreds of files you never touched.
+   */
+  async yourBaseFor(pr: PullRequest): Promise<string | undefined> {
+    return (await this.mainlineFor(pr.baseRefName)) ?? this.mergeBaseFor(pr);
+  }
+
+  /**
+   * Read merge bases and diffs for these pull requests ahead of time, a few at once.
+   *
+   * Analysis asks for them one file at a time, in order, and each is a git process. Asking
+   * in parallel up front means the git work overlaps instead of queueing, and the analyses
+   * that follow find it cached.
+   */
+  async warm(pullRequests: readonly PullRequest[], concurrency = WARM_CONCURRENCY): Promise<void> {
+    await inParallel(pullRequests, concurrency, async (pr) => {
+      const base = await this.mergeBaseFor(pr);
+      const first = pr.files[0];
+      if (base && first) await this.regionsFor(first.path, pr, base);
+    });
+  }
+
   /** Is this pull request's head local? Answered from the ref snapshot. */
   private async hasRef(pr: PullRequest): Promise<boolean> {
     this.refs ??= this.git.refOids(GITRAY_NAMESPACE);
@@ -469,7 +547,7 @@ export class Analyzer {
     pr: PullRequest,
     baseSha: string
   ): Promise<ChangeRegion[]> {
-    const cached = this.store.cachedRegions(path, pr.number, pr.headRefOid);
+    const cached = this.store.cachedRegions(path, pr.number, pr.headRefOid, baseSha);
     if (cached) return cached;
 
     // The same trap as `mergeBaseFor`, and the one that actually bites: with the head not
@@ -487,7 +565,7 @@ export class Analyzer {
     }
     await loading;
 
-    return this.store.cachedRegions(path, pr.number, pr.headRefOid) ?? [];
+    return this.store.cachedRegions(path, pr.number, pr.headRefOid, baseSha) ?? [];
   }
 
   /** Read one pull request's diff and cache the regions of every file in it. */
@@ -530,7 +608,7 @@ export class Analyzer {
    * Alignment between a base commit's copy of the file and the live buffer.
    *
    * Undefined when the two are too far apart to align within the time budget — see
-   * `alignLinesWithin`. That verdict is cached too, for this document version, so a file
+   * `alignLinesAsync`. That verdict is cached too, for this document version, so a file
    * that blew the budget once does not blow it again on every paint.
    */
   private async alignmentFor(
@@ -549,15 +627,23 @@ export class Analyzer {
     const pair = `${baseSha}\0${path}`;
     if (this.farApart.has(pair)) return undefined;
 
-    const baseLines = await this.baseLines(baseSha, path);
-    const alignment = alignLinesWithin(baseLines, bufferLines);
-    if (!alignment) {
-      this.farApart.add(pair);
-      log.debug(`${path}: too far from ${baseSha.slice(0, 7)} to align; degrading to file level`);
+    // An alignment can take a while now that it yields, and the scan and the editor often
+    // ask for the same one at once. They share it.
+    let pending = this.aligning.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const baseLines = await this.baseLines(baseSha, path);
+        const alignment = await alignLinesAsync(baseLines, bufferLines);
+        if (!alignment) {
+          this.farApart.add(pair);
+          log.debug(`${path}: too far from ${baseSha.slice(0, 7)} to align; degrading to file level`);
+        }
+        lruSet(this.alignments, key, alignment ?? TOO_FAR_APART, MAX_ALIGNMENTS);
+        return alignment;
+      })().finally(() => this.aligning.delete(key));
+      this.aligning.set(key, pending);
     }
-
-    lruSet(this.alignments, key, alignment ?? TOO_FAR_APART, MAX_ALIGNMENTS);
-    return alignment;
+    return pending;
   }
 
   private async baseLines(baseSha: string, path: string): Promise<string[]> {

@@ -467,14 +467,15 @@ export class SyncEngine {
     const head = await this.repository.git.headSha();
     if (head !== this.lastHeadSha) {
       if (this.lastHeadSha !== undefined) {
-        log.info('HEAD moved; recomputing against the new merge base');
-        this.analyzer.reset();
-        // Where your branch left the mainline moved too, and every surface reacts to the
-        // invalidation below by scanning immediately. Dropping the state first means that
-        // scan finds no mainline rather than one measured from the old HEAD; the correct
-        // answer arrives from `updateMainline` a moment later in this same pass.
+        log.info('HEAD moved; recomputing what the move can have changed');
+        // Keeps every merge base the move cannot have changed; see `headMoved`. The cached
+        // regions need no clearing: each is checked against its merge base when read.
+        await this.analyzer.headMoved(this.lastHeadSha, head);
+        // Where your branch left the mainline may have moved too. Dropping the state first
+        // means nothing reads a mainline measured from the old HEAD; the correct answer
+        // arrives from `updateMainline` a moment later in this same pass.
         this.store.setMainline(undefined);
-        this.store.invalidateAll();
+        this.store.announce();
       }
       this.lastHeadSha = head;
     }

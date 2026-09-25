@@ -57,6 +57,9 @@ export class RepositorySession implements vscode.Disposable {
 
   private announceTimer: NodeJS.Timeout | undefined;
   private scanTimer: NodeJS.Timeout | undefined;
+  /** Whether a sync pass is running, and whether a scan was asked for during it. */
+  private syncing = false;
+  private scanWanted = false;
   /** `gitray.*` for this folder, read once per settings change rather than per call. */
   private cachedConfig: { generation: number; config: Config } | undefined;
   private disposables: vscode.Disposable[] = [];
@@ -67,8 +70,20 @@ export class RepositorySession implements vscode.Disposable {
     this.scanner = new CollisionScanner(repository, this.store, this.analyzer);
     // Each pass starts by forgetting what the working tree looked like, so an edit made
     // outside the editor — or a checkout — is seen by the next scan.
-    this.scheduler = new Scheduler(this.engine, repository, () =>
-      this.scanner.workingTreeChanged()
+    this.scheduler = new Scheduler(
+      this.engine,
+      repository,
+      () => {
+        this.syncing = true;
+        this.scanner.workingTreeChanged();
+      },
+      () => {
+        this.syncing = false;
+        if (this.scanWanted) {
+          this.scanWanted = false;
+          this.scan();
+        }
+      }
     );
     this.controller = new EditorController(repository, this.store, this.analyzer, () =>
       this.config()
@@ -135,6 +150,14 @@ export class RepositorySession implements vscode.Disposable {
 
   /** Ask for a collision scan, soon. Repeated asks before it starts become one scan. */
   scan(): void {
+    // A sync pass changes the store several times over a few seconds — the list, then the
+    // fetched heads a second later, then the mainline — and a scan started partway through
+    // is thrown away by the next change, having mostly found heads not yet on disk. So
+    // while a pass runs, asking is remembered, and the pass ending starts one scan.
+    if (this.syncing) {
+      this.scanWanted = true;
+      return;
+    }
     if (this.scanTimer) clearTimeout(this.scanTimer);
     this.scanTimer = setTimeout(() => {
       this.scanTimer = undefined;

@@ -2,7 +2,7 @@
   "name": "gitray",
   "displayName": "GitRay",
   "description": "See what your collaborators are changing, before git tells you. Live indicators derived from your repository's open pull requests.",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "publisher": "DaneClaessen",
   "license": "MIT",
   "engines": {
@@ -634,7 +634,8 @@
     "compile": "tsc --noEmit",
     "lint": "eslint src test --ext .ts",
     "test": "node scripts/test.mjs",
-    "check": "npm run compile && npm run lint && npm run test"
+    "check": "npm run compile && npm run lint && npm run test",
+    "perf": "node --import tsx scripts/perf/run.ts"
   },
   "dependencies": {
     "diff": "^5.2.0"
