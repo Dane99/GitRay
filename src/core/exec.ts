@@ -53,14 +53,20 @@ const DEFAULT_MAX_BUFFER = 32 * 1024 * 1024;
  * operations.
  */
 export function gitEnv(): NodeJS.ProcessEnv {
-  return {
+  // Built once. Copying the whole environment is not free — on Windows it is large — and
+  // it was being done for every git process, which a profile of a large repository showed
+  // as a tenth of a second of the extension host's thread per startup.
+  cachedEnv ??= {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
     GIT_OPTIONAL_LOCKS: '0',
     GIT_PAGER: 'cat',
     NO_COLOR: '1'
   };
+  return cachedEnv;
 }
+
+let cachedEnv: NodeJS.ProcessEnv | undefined;
 
 export function run(
   command: string,

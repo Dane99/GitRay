@@ -237,9 +237,22 @@ export class Store implements vscode.Disposable {
     this.regions.set(regionKey(path, prNumber), { headOid, baseSha, regions });
   }
 
-  cachedRegions(path: string, prNumber: number, headOid: string): ChangeRegion[] | undefined {
+  /**
+   * Cached regions for a file from one pull request, if they still apply.
+   *
+   * With `baseSha`, only regions computed from that merge base count. That is what lets a
+   * HEAD move keep the cache: most moves leave most merge bases where they were, and the
+   * entries for the ones that did move stop matching on their own.
+   */
+  cachedRegions(
+    path: string,
+    prNumber: number,
+    headOid: string,
+    baseSha?: string
+  ): ChangeRegion[] | undefined {
     const entry = this.regions.get(regionKey(path, prNumber));
     if (!entry || entry.headOid !== headOid) return undefined;
+    if (baseSha !== undefined && entry.baseSha !== baseSha) return undefined;
     return entry.regions;
   }
 
@@ -253,6 +266,16 @@ export class Store implements vscode.Disposable {
    */
   invalidateAll(): void {
     this.regions.clear();
+    this.onDidChangeEmitter.fire();
+  }
+
+  /**
+   * Tell every surface to re-read, discarding nothing.
+   *
+   * For a HEAD move. Cached regions are checked against the merge base they came from when
+   * they are read, so they need not be thrown away; reading them re-validates them.
+   */
+  announce(): void {
     this.onDidChangeEmitter.fire();
   }
 

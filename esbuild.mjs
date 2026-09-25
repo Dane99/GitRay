@@ -17,10 +17,24 @@ const options = {
   logLevel: 'info'
 };
 
+/**
+ * The line-diff worker, a second bundle beside the first. It is started as a script of its
+ * own, so it cannot live inside extension.js; see src/model/alignWorker.ts.
+ */
+/** @type {import('esbuild').BuildOptions} */
+const worker = {
+  ...options,
+  entryPoints: ['src/model/alignWorker.ts'],
+  outfile: 'dist/alignWorker.js',
+  external: []
+};
+
 if (watch) {
-  const ctx = await esbuild.context(options);
-  await ctx.watch();
+  for (const build of [options, worker]) {
+    const ctx = await esbuild.context(build);
+    await ctx.watch();
+  }
   console.log('[gitray] watching');
 } else {
-  await esbuild.build(options);
+  await Promise.all([esbuild.build(options), esbuild.build(worker)]);
 }

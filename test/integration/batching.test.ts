@@ -22,6 +22,9 @@ let Git: typeof import('../../src/providers/git.js').Git;
 let prRef: typeof import('../../src/providers/git.js').prRef;
 let Store: typeof import('../../src/model/store.js').Store;
 let Analyzer: typeof import('../../src/model/analyzer.js').Analyzer;
+let CollisionScanner: typeof import('../../src/sync/scanner.js').CollisionScanner;
+let readConfig: typeof import('../../src/core/config.js').readConfig;
+let stub: ReturnType<typeof makeVscodeStub>;
 
 let root: string;
 let base: string;
@@ -53,7 +56,7 @@ function withLine(content: string[], index: number, text: string): string[] {
 }
 
 before(async () => {
-  const stub = makeVscodeStub();
+  stub = makeVscodeStub();
   const loader = Module as unknown as {
     _load: (request: string, parent: unknown, isMain: boolean) => unknown;
   };
@@ -66,6 +69,8 @@ before(async () => {
   ({ Git, prRef } = await import('../../src/providers/git.js'));
   ({ Store } = await import('../../src/model/store.js'));
   ({ Analyzer } = await import('../../src/model/analyzer.js'));
+  ({ CollisionScanner } = await import('../../src/sync/scanner.js'));
+  ({ readConfig } = await import('../../src/core/config.js'));
 
   root = mkdtempSync(join(tmpdir(), 'gitray-batch-'));
   git('init', '-q', '--initial-branch=main');
@@ -248,6 +253,114 @@ test('mainline drift read for the whole range matches what landed per file', asy
   assert.equal(b.regions[0]?.origin.kind === 'mainline' && b.regions[0].origin.commits.length, 1);
   assert.equal(head, base, 'the fixture keeps you where you left the mainline');
 
+  store.dispose();
+  api.dispose();
+});
+
+test('a file several megabytes long comes back whole through the blob reader', async () => {
+  // Built with plumbing, so the working tree the other tests read is left alone. Large
+  // enough to arrive in many chunks, which is the case the reader's buffering exists for.
+  const content = Array.from({ length: 120_000 }, (_, i) => `line ${i} ${'x'.repeat(20)}`).join('\n');
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: root, input: content, encoding: 'utf8' }).trim();
+  const tree = execFileSync('git', ['mktree'], { cwd: root, input: `100644 blob ${blob}\tbig.txt\n`, encoding: 'utf8' }).trim();
+  const commit = execFileSync('git', ['commit-tree', tree, '-m', 'big'], { cwd: root, encoding: 'utf8' }).trim();
+
+  const api = new Git(root);
+  try {
+    const [first, second] = await Promise.all([api.readFile(commit, 'big.txt'), api.readFile(base, 'src/a.ts')]);
+    assert.equal(first?.length, content.length);
+    assert.equal(first, content);
+    assert.equal(second, await api.showFile(base, 'src/a.ts'), 'and the answer after it is not misaligned');
+  } finally {
+    api.dispose();
+  }
+});
+
+/** An analyzer whose `git merge-base` calls are counted. */
+function countingAnalyzer() {
+  const store = new Store();
+  const api = new Git(root);
+  let mergeBases = 0;
+  const mergeBase = api.mergeBase.bind(api);
+  api.mergeBase = async (...args: Parameters<typeof api.mergeBase>) => {
+    mergeBases++;
+    return mergeBase(...args);
+  };
+  const analyzer = new Analyzer(api, store, {
+    name: async () => undefined,
+    choose: async () => ({ kind: 'none' })
+  } as never);
+  return { store, api, analyzer, mergeBases: () => mergeBases };
+}
+
+test('a commit keeps every merge base except those of pull requests containing it', async () => {
+  const h = countingAnalyzer();
+  const options = { proximityLines: 3, maxRegionsPerFile: 400 };
+  const text = lines('a').join('\n') + '\n';
+
+  // A commit on top of where you are, made off to the side, and a second pull request
+  // built on top of it — the one case where gaining a commit moves a merge base.
+  const tree = git('rev-parse', `${head}^{tree}`).trim();
+  const gained = execFileSync('git', ['commit-tree', tree, '-p', head, '-m', 'your commit'], { cwd: root, encoding: 'utf8' }).trim();
+  const onTop = execFileSync('git', ['commit-tree', tree, '-p', gained, '-m', 'theirs, on top of yours'], { cwd: root, encoding: 'utf8' }).trim();
+  git('update-ref', prRef(2), onTop);
+
+  const first = pullRequest();
+  const second = { ...pullRequest(), number: 2, headRefOid: onTop };
+  h.store.setPullRequests([first, second]);
+
+  await h.analyzer.analyze('src/a.ts', text, 1, [first, second], options);
+  assert.equal(h.mergeBases(), 2, 'one merge base per pull request to start with');
+
+  await h.analyzer.headMoved(head, gained);
+  await h.analyzer.analyze('src/a.ts', text, 1, [first, second], options);
+  assert.equal(h.mergeBases(), 3, 'only the pull request containing the new commit is asked again');
+
+  // Anything that is not a step forward starts over.
+  await h.analyzer.headMoved(gained, base === head ? tip : base);
+  await h.analyzer.analyze('src/a.ts', text, 1, [first, second], options);
+  assert.equal(h.mergeBases(), 5, 'a jump recomputes everything');
+
+  git('update-ref', '-d', prRef(2));
+  h.store.dispose();
+  h.api.dispose();
+});
+
+test('a scan counts only what you changed, not what landed upstream since a pull request branched', async () => {
+  // You are level with the mainline and have edited one file. The pull request branched
+  // from the old base, so everything the mainline changed since then separates its merge
+  // base from your working tree — none of which is your work.
+  git('checkout', '-q', '-B', 'level', tip);
+  git('update-ref', 'refs/gitray/mainline/main', tip);
+  write('src/a.ts', withLine(git('show', `${tip}:src/a.ts`).trimEnd().split('\n'), 3, 'const a3 = YOURS;'));
+
+  const store = new Store();
+  const api = new Git(root);
+  const analyzer = new Analyzer(api, store, {
+    name: async () => undefined,
+    choose: async () => ({ kind: 'none' })
+  } as never);
+  const Uri = stub.api.Uri as { file(path: string): unknown };
+  const repository = {
+    git: api,
+    uriFor: (path: string) => Uri.file(join(root, ...path.split('/')))
+  };
+  const scanner = new CollisionScanner(repository as never, store, analyzer);
+
+  const pr = pullRequest();
+  store.setPullRequests([pr]);
+  await scanner.scan(readConfig());
+
+  assert.ok(scanner.analysisFor('src/a.ts'), 'the file you edited is scanned');
+  assert.equal(
+    scanner.analysisFor('src/b.ts'),
+    undefined,
+    'a file only the mainline changed is not yours, and is not scanned'
+  );
+
+  git('checkout', '-q', '-f', 'yours');
+  git('update-ref', '-d', 'refs/gitray/mainline/main');
+  scanner.dispose();
   store.dispose();
   api.dispose();
 });

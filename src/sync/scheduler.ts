@@ -29,7 +29,9 @@ export class Scheduler implements vscode.Disposable {
     private readonly engine: SyncEngine,
     private readonly repository: Repository,
     /** Runs at the start of every pass, before the engine does. */
-    private readonly beforeSync: () => void = () => {}
+    private readonly beforeSync: () => void = () => {},
+    /** Runs when a pass has finished, whether or not it succeeded. */
+    private readonly afterSync: () => void = () => {}
   ) {}
 
   start(): void {
@@ -92,6 +94,7 @@ export class Scheduler implements vscode.Disposable {
       log.error('scheduled sync failed', error);
     } finally {
       this.running = false;
+      this.afterSync();
       this.lastRunAt = Date.now();
     }
 

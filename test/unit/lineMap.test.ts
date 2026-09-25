@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alignLines, alignLinesWithin, splitLines } from '../../src/model/lineMap.js';
+import { alignLines, alignLinesAsync, alignLinesWithin, splitLines } from '../../src/model/lineMap.js';
 
 const base = splitLines(
   ['line0', 'line1', 'line2', 'line3', 'line4', 'line5', 'line6', 'line7'].join('\n')
@@ -217,4 +217,40 @@ test('within the limits, a bounded alignment is the same alignment', () => {
   const bounded = alignLinesWithin(base, buffer);
   assert.ok(bounded);
   assert.deepEqual(bounded.localEdits, alignLines(base, buffer).localEdits);
+});
+
+// --- Asynchronous alignment ----------------------------------------------------------
+
+test('the asynchronous alignment is the same alignment', async () => {
+  const buffer = [...base.slice(0, 3), 'changed', ...base.slice(4), 'appended'];
+  const aligned = await alignLinesAsync(base, buffer);
+  assert.ok(aligned);
+  assert.deepEqual(aligned.localEdits, alignLines(base, buffer).localEdits);
+});
+
+test('a heavily diverged file is aligned without holding the thread', async () => {
+  // Past the quick synchronous attempt, so this is the path that yields between steps. The
+  // same diff done synchronously holds the thread for several hundred milliseconds.
+  const long = Array.from({ length: 3000 }, (_, i) => `line${i}`);
+  const edited = long.map((line, i) => (i % 3 === 0 ? `edited ${line}` : line));
+
+  let longest = 0;
+  let last = performance.now();
+  const ticker = setInterval(() => {
+    const now = performance.now();
+    longest = Math.max(longest, now - last);
+    last = now;
+  }, 5);
+  const aligned = await alignLinesAsync(long, edited, { maxEditLength: 8000, timeoutMs: 30_000 });
+  clearInterval(ticker);
+
+  assert.ok(aligned, 'generous limits should let it finish');
+  assert.equal(aligned.localEdits.length, 1000);
+  assert.ok(longest < 100, `the thread was held for ${Math.round(longest)} ms`);
+});
+
+test('the asynchronous alignment still gives up past its limits', async () => {
+  const a = Array.from({ length: 500 }, (_, i) => `a${i}`);
+  const b = Array.from({ length: 500 }, (_, i) => `b${i}`);
+  assert.equal(await alignLinesAsync(a, b, { maxEditLength: 50, timeoutMs: 5000 }), undefined);
 });

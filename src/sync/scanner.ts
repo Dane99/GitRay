@@ -20,11 +20,18 @@ import { MAX_SCANNED_FILES, originKey } from '../core/types.js';
 import type { Config } from '../core/config.js';
 import { log } from '../core/log.js';
 import { matchesAny } from '../core/glob.js';
+import { inParallel } from '../core/parallel.js';
 import type { Analyzer } from '../model/analyzer.js';
 import type { Store } from '../model/store.js';
 import type { Repository } from '../providers/repository.js';
 
 const MAX_FILES = MAX_SCANNED_FILES;
+
+/**
+ * Files analyzed at once. Analysis mostly waits — on the blob reader, on a yielding
+ * alignment — so a few in flight overlap that waiting without piling up work.
+ */
+const ANALYSIS_CONCURRENCY = 4;
 
 export class CollisionScanner implements vscode.Disposable {
   private results = new Map<string, FileAnalysis>();
@@ -41,6 +48,8 @@ export class CollisionScanner implements vscode.Disposable {
    * move, or something outside the editor can change the answer.
    */
   private changed = new Map<string, Promise<string[]>>();
+  /** The files the mainline changed, for the range it was last asked about. */
+  private landed: { key: string; paths: Promise<string[]> } | undefined;
 
   private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.onDidChangeEmitter.event;
@@ -125,10 +134,20 @@ export class CollisionScanner implements vscode.Disposable {
       vscode.workspace.textDocuments.map((document) => [document.uri.toString(), document])
     );
 
+    const scanned = [...candidates].slice(0, MAX_FILES);
+
+    // Merge bases and diffs for every pull request that touches a candidate, read a few at
+    // a time before any file is analyzed. Analysis would otherwise ask for them one by one,
+    // each a git process waiting behind the last.
+    const wanted = new Set(scanned);
+    await this.analyzer.warm(
+      pullRequests.filter((pr) => pr.files.some((file) => wanted.has(file.path)))
+    );
+
     const results = new Map<string, FileAnalysis>();
-    for (const path of [...candidates].slice(0, MAX_FILES)) {
+    await inParallel(scanned, ANALYSIS_CONCURRENCY, async (path) => {
       const current = await this.readCurrentText(path, open);
-      if (current === undefined) continue;
+      if (current === undefined) return;
 
       const analysis = await this.analyzer.analyze(path, current.text, current.version, pullRequests, {
         proximityLines: config.proximityLines,
@@ -136,7 +155,7 @@ export class CollisionScanner implements vscode.Disposable {
         mainline
       });
       if (analysis.regions.length > 0) results.set(path, analysis);
-    }
+    });
 
     this.publish(results);
   }
@@ -160,9 +179,13 @@ export class CollisionScanner implements vscode.Disposable {
 
     if (pullRequests.length > 0) {
       const touched = new Set(this.store.allTouchedPaths());
-      // One `git diff --name-only` per distinct merge base — normally just one, since
-      // every pull request branches off the same base commit.
-      for (const baseSha of await this.distinctMergeBases(pullRequests)) {
+      // One `git diff --name-only` per commit your edits are measured from, which is where
+      // your branch left the mainline — one commit, in practice. Measuring from each pull
+      // request's own merge base instead was one working-tree diff per distinct base, and
+      // in a busy repository there are dozens; worse, everything that landed upstream after
+      // an old pull request branched counted as your change, which turned forty edited
+      // files into seven hundred candidates.
+      for (const baseSha of await this.distinctYourBases(pullRequests)) {
         for (const path of await this.changedSince(baseSha)) {
           if (keep(path, touched)) candidates.add(path);
         }
@@ -170,15 +193,22 @@ export class CollisionScanner implements vscode.Disposable {
     }
 
     if (mainline) {
-      const landed = new Set(
-        await this.repository.git.changedPaths(mainline.base, mainline.tip)
-      );
+      const landed = new Set(await this.landedBetween(mainline.base, mainline.tip));
       for (const path of await this.changedSince(mainline.base)) {
         if (keep(path, landed)) candidates.add(path);
       }
     }
 
     return candidates;
+  }
+
+  /** Files the mainline changed between two commits, which never changes for a pair. */
+  private landedBetween(base: string, tip: string): Promise<string[]> {
+    const key = `${base}..${tip}`;
+    if (this.landed?.key !== key) {
+      this.landed = { key, paths: this.repository.git.changedPaths(base, tip) };
+    }
+    return this.landed.paths;
   }
 
   private changedSince(baseSha: string): Promise<string[]> {
@@ -190,11 +220,17 @@ export class CollisionScanner implements vscode.Disposable {
     return pending;
   }
 
-  /** One merge base per pull request, answered from the analyzer's cache. */
-  private async distinctMergeBases(pullRequests: readonly PullRequest[]): Promise<string[]> {
+  /**
+   * The distinct commits your edits are measured from, across these pull requests.
+   *
+   * Answered per base branch where the mainline copy is known, so a hundred pull requests
+   * into `main` are one lookup; a pull request into a branch with no local copy falls back
+   * to its own merge base, the same as `ownEdits` does.
+   */
+  private async distinctYourBases(pullRequests: readonly PullRequest[]): Promise<string[]> {
     const bases = new Set<string>();
     for (const pr of pullRequests) {
-      const base = await this.analyzer.mergeBaseFor(pr);
+      const base = await this.analyzer.yourBaseFor(pr);
       if (base) bases.add(base);
     }
     return [...bases];

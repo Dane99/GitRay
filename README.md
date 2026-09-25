@@ -406,6 +406,21 @@ network and no open pull requests. A sample lives in [`fixtures/sample.json`](fi
 - `test/integration/activation.test.ts` — activates the real bundle against a stubbed
   VS Code API. This one found a live feedback loop between the scanner and the store during
   development; it is worth keeping.
+- `test/integration/batching.test.ts` — holds every batched git read to the one-file read
+  it replaced, against real git.
+
+### Performance
+
+```sh
+npm run perf                    # react, vscode, and kubernetes, this working tree
+npm run perf -- --src main      # the same, for another build
+```
+
+Runs the real extension against large public repositories through a developer's day —
+startup, polling, refresh, opening a file, typing, cursor movement, saving, committing —
+and fails when any phase blocks the extension host for too long or stops producing the
+right answer. The first run clones each testbed, which is a few gigabytes. See
+[`scripts/perf/README.md`](scripts/perf/README.md).
 
 ## License
 
